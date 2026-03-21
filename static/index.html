@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Geo-Go 分布式监控系统</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { margin: 0; display: flex; height: 100vh; font-family: 'Segoe UI', sans-serif; background: #1a1a1a; color: white; }
+        #map { flex: 3; height: 100%; border-right: 2px solid #333; }
+        #sidebar { flex: 1; padding: 20px; overflow-y: auto; background: #252525; }
+        .alarm-card { background: #ff4d4d; padding: 10px; margin-bottom: 10px; border-radius: 5px; animation: slideIn 0.3s; }
+        @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
+        h2 { border-bottom: 1px solid #444; padding-bottom: 10px; }
+        .stat-box { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
+        .stat-item { background: #333; padding: 15px; border-radius: 8px; text-align: center; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div id="sidebar">
+        <h2>实时监控面板</h2>
+        <div class="stat-box">
+            <div class="stat-item">在线车辆<br><b id="online-count">0</b></div>
+            <div class="stat-item">今日告警<br><b id="alarm-count" style="color:#ff4d4d">0</b></div>
+        </div>
+        <h3>最近告警日志</h3>
+        <div id="alarm-list"></div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // 1. 初始化暗黑风格地图
+        const map = L.map('map').setView([39.9042, 116.4074], 13);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
+
+        const markers = {}; // 存储所有司机的 Marker
+        const paths = {};   // 存储轨迹线
+
+        // 2. 定时获取周围车辆 (Nearby 接口)
+        function refreshData() {
+            // 这里假设你的经纬度在某个中心点
+            fetch('/nearby?lng=116.4074&lat=39.9042')
+                .then(res => res.text())
+                .then(data => {
+                    // 解析 Nearby 接口返回的字符串 (建议后端改为 JSON)
+                    updateStats(data);
+                });
+            
+            // 获取历史轨迹 (这里以固定 ID 为例)
+            updateTrack("phone_tester_01");
+        }
+
+        function updateTrack(id) {
+            fetch(`/history?id=${id}`)
+                .then(res => res.json())
+                .then(geoJSON => {
+                    if (paths[id]) map.removeLayer(paths[id]);
+                    paths[id] = L.geoJSON(geoJSON, { style: { color: '#00f2ff', weight: 3 } }).addTo(map);
+                    
+                    // 更新图标位置到最后一个点
+                    const coords = geoJSON.coordinates;
+                    if (coords.length > 0) {
+                        const last = coords[coords.length - 1];
+                        if (!markers[id]) {
+                            markers[id] = L.circleMarker([last[1], last[0]], {radius: 8, color: '#00f2ff'}).addTo(map);
+                        } else {
+                            markers[id].setLatLng([last[1], last[0]]);
+                        }
+                    }
+                });
+        }
+
+        function addAlarm(msg) {
+            const list = document.getElementById('alarm-list');
+            const card = document.createElement('div');
+            card.className = 'alarm-card';
+            card.innerHTML = `<strong>⚠️ 告警:</strong> ${msg} <br><small>${new Date().toLocaleTimeString()}</small>`;
+            list.prepend(card);
+            document.getElementById('alarm-count').innerText = parseInt(document.getElementById('alarm-count').innerText) + 1;
+        }
+
+        setInterval(refreshData, 3000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+version: '3.8'
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_URL=postgres://docker:floder123@172.17.0.1:5432/gis_db?sslmode=disable
+      - REDIS_URL=geo-go-redis-1:6379
+    restart: always
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 100M
