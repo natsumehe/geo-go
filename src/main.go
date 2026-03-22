@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
@@ -134,6 +135,31 @@ func HistoryHandle(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, geoJSON)
 }
 
+func AlarmsHandle(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// 查询最近 10 条告警记录
+	rows, err := db.Query(`
+        SELECT driver_name, fence_name, to_char(created_at, 'HH24:MI:SS') 
+        FROM alarm_logs 
+        ORDER BY created_at DESC LIMIT 10`)
+
+	if err != nil {
+		fmt.Fprint(w, `[]`)
+		return
+	}
+	defer rows.Close()
+
+	var results []string
+	for rows.Next() {
+		var d, f, t string
+		rows.Scan(&d, &f, &t)
+		results = append(results, fmt.Sprintf(`{"driver":"%s", "fence":"%s", "time":"%s"}`, d, f, t))
+	}
+	fmt.Fprintf(w, "[%s]", strings.Join(results, ","))
+}
+
 func main() {
 	// 1. 优先从环境变量读取连接字符串，如果没有则使用默认值
 	connStr := os.Getenv("DB_URL")
@@ -162,10 +188,10 @@ func main() {
 		log.Fatalf("无法连接到数据库 (%s)：%v", connStr, err)
 	}
 
-	// ... 后面的路由配置保持不变 ...
 	http.HandleFunc("/update", UpdateHandle)
 	http.HandleFunc("/nearby", NearbyHandle)
 	http.HandleFunc("/history", HistoryHandle)
+	http.HandleFunc("/alarms", AlarmsHandle)
 
 	// 注意：静态文件路径要匹配 Dockerfile 里的工作目录
 	http.Handle("/", http.FileServer(http.Dir("/root/static")))

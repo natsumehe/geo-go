@@ -1,86 +1,67 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
-    <title>Geo-Go 分布式监控系统</title>
+    <title>Geo-Go 实时监控系统 v2.0</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
-        body { margin: 0; display: flex; height: 100vh; font-family: 'Segoe UI', sans-serif; background: #1a1a1a; color: white; }
-        #map { flex: 3; height: 100%; border-right: 2px solid #333; }
-        #sidebar { flex: 1; padding: 20px; overflow-y: auto; background: #252525; }
-        .alarm-card { background: #ff4d4d; padding: 10px; margin-bottom: 10px; border-radius: 5px; animation: slideIn 0.3s; }
-        @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
-        h2 { border-bottom: 1px solid #444; padding-bottom: 10px; }
-        .stat-box { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
-        .stat-item { background: #333; padding: 15px; border-radius: 8px; text-align: center; }
+        :root { --panel-bg: #252525; --accent: #00f2ff; --alarm: #ff4d4d; }
+        body { margin: 0; display: flex; height: 100vh; font-family: 'Inter', sans-serif; background: #1a1a1a; color: white; overflow: hidden; }
+        
+        /* 地图区域 */
+        #map { flex: 1; height: 100%; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+
+        /* 侧边栏 */
+        #sidebar { 
+            width: 350px; background: var(--panel-bg); padding: 25px; 
+            box-shadow: -5px 0 15px rgba(0,0,0,0.3); position: relative;
+            transition: transform 0.3s ease; z-index: 1000;
+        }
+        #sidebar.collapsed { transform: translateX(350px); width: 0; padding: 0; }
+
+        /* 收缩切换按钮 */
+        #toggle-panel {
+            position: absolute; left: -45px; top: 20px; width: 45px; height: 45px;
+            background: var(--panel-bg); color: var(--accent); border: none;
+            border-radius: 8px 0 0 8px; cursor: pointer; font-size: 20px;
+            box-shadow: -2px 0 5px rgba(0,0,0,0.2);
+        }
+
+        /* 统计卡片 */
+        .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 20px 0; }
+        .stat-card { background: #333; padding: 15px; border-radius: 12px; text-align: center; border: 1px solid #444; }
+        .stat-card b { font-size: 24px; color: var(--accent); }
+
+        /* 告警列表 */
+        #alarm-list { height: calc(100vh - 300px); overflow-y: auto; }
+        .alarm-item { 
+            background: rgba(255, 77, 77, 0.1); border-left: 4px solid var(--alarm);
+            padding: 12px; margin-bottom: 10px; border-radius: 4px;
+            animation: slideIn 0.4s ease-out;
+        }
+        @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
     </style>
 </head>
 <body>
     <div id="map"></div>
-    <div id="sidebar">
-        <h2>实时监控面板</h2>
-        <div class="stat-box">
-            <div class="stat-item">在线车辆<br><b id="online-count">0</b></div>
-            <div class="stat-item">今日告警<br><b id="alarm-count" style="color:#ff4d4d">0</b></div>
+
+    <aside id="sidebar">
+        <button id="toggle-panel" title="切换面板">📊</button>
+        <h2 style="margin-top:0">🛰️ 实时监控中心</h2>
+        
+        <div class="stat-grid">
+            <div class="stat-card">在线设备<br><b id="count-online">0</b></div>
+            <div class="stat-card">触发告警<br><b id="count-alarm" style="color:var(--alarm)">0</b></div>
         </div>
-        <h3>最近告警日志</h3>
-        <div id="alarm-list"></div>
-    </div>
+
+        <h3>🚨 最近动态</h3>
+        <div id="alarm-list">
+            <div style="color:#888; text-align:center; margin-top:20px;">暂无实时告警...</div>
+        </div>
+    </aside>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script>
-        // 1. 初始化暗黑风格地图
-        const map = L.map('map').setView([39.9042, 116.4074], 13);
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
-
-        const markers = {}; // 存储所有司机的 Marker
-        const paths = {};   // 存储轨迹线
-
-        // 2. 定时获取周围车辆 (Nearby 接口)
-        function refreshData() {
-            // 这里假设你的经纬度在某个中心点
-            fetch('/nearby?lng=116.4074&lat=39.9042')
-                .then(res => res.text())
-                .then(data => {
-                    // 解析 Nearby 接口返回的字符串 (建议后端改为 JSON)
-                    updateStats(data);
-                });
-            
-            // 获取历史轨迹 (这里以固定 ID 为例)
-            updateTrack("phone_tester_01");
-        }
-
-        function updateTrack(id) {
-            fetch(`/history?id=${id}`)
-                .then(res => res.json())
-                .then(geoJSON => {
-                    if (paths[id]) map.removeLayer(paths[id]);
-                    paths[id] = L.geoJSON(geoJSON, { style: { color: '#00f2ff', weight: 3 } }).addTo(map);
-                    
-                    // 更新图标位置到最后一个点
-                    const coords = geoJSON.coordinates;
-                    if (coords.length > 0) {
-                        const last = coords[coords.length - 1];
-                        if (!markers[id]) {
-                            markers[id] = L.circleMarker([last[1], last[0]], {radius: 8, color: '#00f2ff'}).addTo(map);
-                        } else {
-                            markers[id].setLatLng([last[1], last[0]]);
-                        }
-                    }
-                });
-        }
-
-        function addAlarm(msg) {
-            const list = document.getElementById('alarm-list');
-            const card = document.createElement('div');
-            card.className = 'alarm-card';
-            card.innerHTML = `<strong>⚠️ 告警:</strong> ${msg} <br><small>${new Date().toLocaleTimeString()}</small>`;
-            list.prepend(card);
-            document.getElementById('alarm-count').innerText = parseInt(document.getElementById('alarm-count').innerText) + 1;
-        }
-
-        setInterval(refreshData, 3000);
-    </script>
+    <script src="js/app.js"></script>
 </body>
 </html>
