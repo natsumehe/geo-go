@@ -7,8 +7,37 @@ const App = {
     pollTimer: null,
     layers: { line: null, marker: null },
     scrollTimeout: null,
+    id: null,
 
+    getDeviceID() {
+        // 1. 先尝试从本地存储读取（这是保证“老用户”不变成“新设备”的关键）
+        let id = localStorage.getItem('geo_device_id');
+        
+        if (!id) {
+            // 2. 如果是第一次进入，获取设备信息
+            const ua = navigator.userAgent;
+            let model = "Unknown_Device";
+            
+            // 提取型号：例如从 "iPhone; CPU iPhone OS 17_4" 中提取 iPhone
+            if (/iPhone/.test(ua)) {
+                model = "iPhone";
+            } else if (/Android/.test(ua)) {
+                const match = ua.match(/Android [\d._]+; ([^;]+)\)/);
+                model = match ? match[1].replace(/\s+/g, '_') : "Android";
+            }
+
+            // 3. 生成一个 4 位随机后缀（仅在第一次生成，后续永远不变）
+            const suffix = Math.random().toString(36).slice(2, 6).toUpperCase();
+            id = `${model}_${suffix}`;
+
+            // 4. 关键：存入 localStorage，只要用户不清除浏览器缓存，它就永远是这个 ID
+            localStorage.setItem('geo_device_id', id);
+        }
+        return id;
+    },
     init() {
+        this.id = this.getDeviceID();
+        document.getElementById('device-info').innerText = `DEVICE ID: ${this.id}`;
         this.initMap();
         this.startDiscovery();
         this.bindSwiper();
