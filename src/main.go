@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -147,6 +148,24 @@ func AlarmsHandle(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "[%s]", strings.Join(results, ","))
 }
 
+func ListHandle(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	rows, err := db.Query("SELECT DISTINCT name FROM driver_history WHERE created_at > NOW() - INTERVAL '24 hours'")
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer rows.Close()
+
+	devices := []string{}
+	for rows.Next() {
+		var n string
+		rows.Scan(&n)
+		devices = append(devices, n)
+	}
+	json.NewEncoder(w).Encode(devices)
+}
+
 func main() {
 	// 1. 环境变量读取（数据库在宿主机 172.17.0.1）
 	connStr := os.Getenv("DB_URL")
@@ -185,6 +204,7 @@ func main() {
 	http.HandleFunc("/update", UpdateHandle)
 	http.HandleFunc("/history", HistoryHandle)
 	http.HandleFunc("/alarms", AlarmsHandle)
+	http.HandleFunc("/list", ListHandle)
 
 	// 自动适配容器与本地路径
 	staticDir := "/app/static"
