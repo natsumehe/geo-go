@@ -1,18 +1,23 @@
 version: '3.8'
+
 services:
   app:
     build: .
     ports:
-      - "8080:8080"
+      - "443:443"    # 【修改】开启 HTTPS 标准端口
+      - "8080:8080"  # 保留 8080 方便本地测试（可选）
+    volumes:
+      - .:/app       # 【关键】将当前目录挂载到容器，确保 Go 能读取 server.crt/key
     environment:
       - DB_URL=postgres://docker:floder123@172.17.0.1:5432/gis_db?sslmode=disable
-      - REDIS_URL=geo-go-redis-1:6379
+      - REDIS_URL=redis:6379 # 简化为服务名，docker 会自动解析
     restart: always
     depends_on:
       - redis
 
   redis:
     image: redis:7-alpine
+    container_name: geo-go-redis-1 # 固定名称，方便调试
     restart: always
     deploy:
       resources:
