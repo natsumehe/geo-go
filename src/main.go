@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
@@ -50,42 +51,73 @@ func checkFence(driverID string, lng, lat float64) {
 }
 
 func UpdateHandle(w http.ResponseWriter, r *http.Request) {
-	// 1. 解析参数
-	id := r.URL.Query().Get("id")
-	lngStr := r.URL.Query().Get("lng")
-	latStr := r.URL.Query().Get("lat")
+	// 1. 【跨域支持】允许手机浏览器、小程序等第三方前端直接上报
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, QUERY")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
-	if id == "" || lngStr == "" || latStr == "" {
-		http.Error(w, "参数缺失", http.StatusBadRequest)
+	// 处理预检请求 (Options)
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	lng, _ := strconv.ParseFloat(lngStr, 64)
-	lat, _ := strconv.ParseFloat(latStr, 64)
+	// 2. 【解析参数】兼容不同客户端 (lng 为你的标准, lon 为 Traccar/部分手机标准)
+	id := r.URL.Query().Get("id")
+	latStr := r.URL.Query().Get("lat")
+	lngStr := r.URL.Query().Get("lng")
+	if lngStr == "" {
+		lngStr = r.URL.Query().Get("lon") // 自动兼容 Traccar Client
+	}
 
-	// 2. 同步操作：快速更新 Redis (内存操作)
-	rdb.GeoAdd(ctx, "drivers:live", &redis.GeoLocation{
-		Name: id, Longitude: lng, Latitude: lat,
-	})
+	// 基本校验
+	if id == "" || lngStr == "" || latStr == "" {
+		log.Printf(" [!] 收到无效请求: id=%s, lat=%s, lng=%s", id, latStr, lngStr)
+		http.Error(w, "Missing Parameters", http.StatusBadRequest)
+		return
+	}
 
-	// 3. 异步操作：启动协程处理耗时的磁盘写入和围栏检测
-	// 注意：这里需要把外部变量传进去，防止闭包逃逸导致的数据问题
+	// 转换为 float64
+	lng, errLng := strconv.ParseFloat(lngStr, 64)
+	lat, errLat := strconv.ParseFloat(latStr, 64)
+	if errLng != nil || errLat != nil {
+		http.Error(w, "Invalid Coordinates", http.StatusBadRequest)
+		return
+	}
+
+	// 3. 【实时更新 Redis】保证前端 Nearby 查询秒级响应
+	// 使用 GeoAdd 存入名为 "drivers:live" 的 Key
+	err := rdb.GeoAdd(ctx, "drivers:live", &redis.GeoLocation{
+		Name:      id,
+		Longitude: lng,
+		Latitude:  lat,
+	}).Err()
+	if err != nil {
+		log.Printf(" [❌ Redis 写入失败] %v", err)
+	}
+
+	// 4. 【异步持久化与围栏检测】启动协程，不阻塞手机端的响应
 	go func(driverID string, longitude, latitude float64) {
-		// 后台持久化到 PostGIS (磁盘操作)
-		_, err := db.Exec(`INSERT INTO driver_history (name, location) VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326))`,
-			driverID, longitude, latitude)
+		// A. 写入历史轨迹表 (PostGIS)
+		historySQL := `
+            INSERT INTO driver_history (name, location) 
+            VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326))`
 
-		if err != nil {
-			log.Printf("数据库写入失败：%v", err)
-			return
+		_, dbErr := db.Exec(historySQL, driverID, longitude, latitude)
+		if dbErr != nil {
+			log.Printf(" [❌ PostGIS 轨迹写入失败] %v", dbErr)
+			return // 如果基础写入失败，后续围栏检测也跳过
 		}
 
-		// 后台围栏检测
+		// B. 电子围栏检测 (checkFence 函数)
+		// 逻辑已经在你之前的代码中实现，这里直接调用
 		checkFence(driverID, longitude, latitude)
+
 	}(id, lng, lat)
 
-	// 4. 立即响应客户端 (不再等待数据库写入结果)
-	fmt.Fprintf(w, "OK: 司机 %s 坐标已接收并正在后台同步", id)
+	// 5. 【即时响应】告诉手机端“收到”，节省手机电量
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "OK: %s Location Synced at %s", id, time.Now().Format("15:04:05"))
 }
 
 func NearbyHandle(w http.ResponseWriter, r *http.Request) {

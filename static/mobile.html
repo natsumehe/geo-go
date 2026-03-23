@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Geo-Go 轨迹采集</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body { background: #1a1a1a; color: #00f2ff; text-align: center; font-family: sans-serif; padding: 50px 20px; }
+        .btn { background: #00f2ff; color: #000; padding: 15px 30px; border-radius: 30px; border: none; font-size: 18px; font-weight: bold; margin-top: 20px; }
+        #status { margin-top: 20px; color: #888; }
+    </style>
+</head>
+<body>
+    <h1>🛰️ 轨迹采集器</h1>
+    <div id="coords">等待定位...</div>
+    <button class="btn" onclick="startTracking()">开启实时上报</button>
+    <div id="status">未运行</div>
+
+    <script>
+        let watchId = null;
+        const driverID = "Tesla_Model_Y_001"; // 对应你地图上的 ID
+
+        function startTracking() {
+            if (!navigator.geolocation) {
+                alert("抱歉，您的浏览器不支持地理定位");
+                return;
+            }
+
+            document.getElementById('status').innerText = "正在请求 GPS 权限...";
+
+            // 使用 watchPosition 持续监听位置变化
+            watchId = navigator.geolocation.watchPosition((pos) => {
+                const lat = pos.coords.latitude;
+                const lng = pos.coords.longitude;
+                document.getElementById('coords').innerText = `经度: ${lng.toFixed(5)} \n 纬度: ${lat.toFixed(5)}`;
+
+                // 上报到你的 Go 后端
+                fetch(`/update?id=${driverID}&lat=${lat}&lng=${lng}`)
+                    .then(res => res.text())
+                    .then(data => {
+                        document.getElementById('status').innerText = "✅ 上报成功: " + new Date().toLocaleTimeString();
+                    });
+            }, (err) => {
+                document.getElementById('status').innerText = "❌ 定位失败: " + err.message;
+            }, {
+                enableHighAccuracy: true, // 开启高精度
+                maximumAge: 0,
+                timeout: 5000
+            });
+        }
+    </script>
+</body>
+</html>
