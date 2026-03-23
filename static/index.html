@@ -1,69 +1,93 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
     <title>Geo-Go 实时中心</title>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
-        body, html { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
-        #map { height: 100vh; width: 100vw; z-index: 1; }
+        :root { --neon: #00f2ff; --panel-bg: rgba(15, 15, 15, 0.9); }
+        
+        /* 强制全屏撑开 */
+        html, body { 
+            margin: 0; padding: 0; width: 100%; height: 100%; 
+            background: #000; overflow: hidden; font-family: -apple-system, sans-serif; 
+        }
+        
+        /* 地图层级置底 */
+        #map { 
+            position: absolute; top: 0; left: 0;
+            height: 100%; width: 100%; 
+            z-index: 1; background: #0a0a0a; 
+        }
 
-        /* 顶部导航控制栏 */
+        /* UI层级置顶 */
         #top-bar {
-            position: absolute; top: 20px; right: 20px; 
+            position: absolute; top: 15px; right: 15px; 
             z-index: 2000; display: flex; gap: 10px;
         }
         .nav-btn {
-            background: rgba(0, 0, 0, 0.8); color: #00f2ff;
-            border: 1px solid #00f2ff; padding: 10px 18px;
-            border-radius: 4px; cursor: pointer; font-weight: bold;
-            font-size: 14px; transition: 0.3s;
+            background: rgba(0, 0, 0, 0.8); color: var(--neon);
+            border: 1px solid var(--neon); padding: 10px 16px;
+            border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 13px;
+            pointer-events: auto; /* 确保可点击 */
         }
-        .nav-btn:hover { background: #00f2ff; color: #000; box-shadow: 0 0 10px #00f2ff; }
 
-        /* 左侧动态设备列表 */
-        #sidebar {
-            position: absolute; top: 20px; left: 20px; width: 220px;
-            background: rgba(10, 10, 10, 0.85); color: #00f2ff;
-            padding: 15px; border-radius: 8px; z-index: 2000;
-            border: 1px solid #333; backdrop-filter: blur(5px);
-            max-height: 80vh; overflow-y: auto;
+        #device-swiper-container {
+            position: absolute; bottom: 30px; left: 0; width: 100vw;
+            z-index: 2000; overflow: hidden;
+            pointer-events: none; /* 穿透到下方滚动 */
         }
-        #sidebar h3 { margin: 0 0 15px 0; font-size: 16px; border-bottom: 1px solid #333; padding-bottom: 10px; }
-        #device-list { list-style: none; padding: 0; margin: 0; }
-        #device-list li { 
-            padding: 12px; border-radius: 4px; margin-bottom: 5px;
-            cursor: pointer; transition: 0.2s; font-size: 13px;
-            background: rgba(255,255,255,0.05); border: 1px solid transparent;
+        #device-swiper {
+            display: flex; gap: 15px; 
+            padding: 0 calc(50vw - 120px); 
+            overflow-x: auto; scroll-snap-type: x mandatory;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: none;
+            pointer-events: auto; /* 恢复自身点击 */
         }
-        #device-list li:hover { border-color: #00f2ff; background: rgba(0, 242, 255, 0.1); }
-        #device-list li.active { background: #00f2ff; color: #000; font-weight: bold; }
+        #device-swiper::-webkit-scrollbar { display: none; }
 
-        /* 滚动条样式 */
-        #sidebar::-webkit-scrollbar { width: 4px; }
-        #sidebar::-webkit-scrollbar-thumb { background: #333; border-radius: 10px; }
+        .swiper-slide {
+            flex: 0 0 240px; width: 240px; height: 110px;
+            background: var(--panel-bg); color: white;
+            border-radius: 16px; border: 1px solid #333;
+            padding: 15px; scroll-snap-align: center;
+            transition: all 0.3s ease;
+            display: flex; flex-direction: column; justify-content: space-between;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            box-sizing: border-box;
+        }
+
+        .swiper-slide.active { border-color: var(--neon); box-shadow: 0 0 20px rgba(0, 242, 255, 0.3); }
+        .slide-id { font-size: 18px; font-weight: bold; }
+        .slide-tag { font-size: 10px; color: var(--neon); }
+        .leaflet-control-attribution { display: none !important; }
     </style>
 </head>
 <body>
-
-    <div id="top-bar">
-        <button class="nav-btn" onclick="location.href='mobile.html'">📱 进入采集端</button>
-        <button id="fs-btn" class="nav-btn" onclick="toggleFullScreen()">🖥️ 开启全屏</button>
-    </div>
-
-    <div id="sidebar">
-        <h3>🛰️ 在线设备 (24h)</h3>
-        <ul id="device-list">
-            <li>正在搜索信号...</li>
-        </ul>
-    </div>
-
     <div id="map"></div>
 
-    <script src="js/app.js">
-        
+    <div id="top-bar">
+        <button class="nav-btn" onclick="location.href='mobile.html'">📱 采集端</button>
+        <button class="nav-btn" onclick="toggleFullScreen()">🖥️ 全屏</button>
+    </div>
+
+    <div id="device-swiper-container">
+        <div id="device-swiper">
+            <div class="swiper-slide" style="justify-content:center; align-items:center; color:#444;">
+                SCANNING...
+            </div>
+        </div>
+    </div>
+
+    <script src="js/app.js"></script>
+    <script>
+        function toggleFullScreen() {
+            if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+            else document.exitFullscreen();
+        }
     </script>
 </body>
 </html>
