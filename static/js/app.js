@@ -41,9 +41,11 @@ const App = {
         this.initMap();
         this.startDiscovery();
         this.bindSwiper();
+        this.loadFences();
         console.log("Radar System Initialized.");
     },
 
+    
     initMap() {
         // 去除标志并开启 Canvas 渲染提高性能
         this.map = L.map('map', { 
@@ -139,6 +141,31 @@ const App = {
             }
         } catch (e) { console.error("Track error", e); }
     },
+
+    async  loadFences() {
+    try {
+        const res = await fetch('/fences');
+        const data = await res.json();
+        
+        L.geoJSON(data, {
+            style: function(feature) {
+                return {
+                    color: "#ff3300", // 禁行区用红色
+                    weight: 2,
+                    fillColor: "#ff3300",
+                    fillOpacity: 0.2,
+                    dashArray: '5, 10' // 虚线效果更有“禁区”感
+                };
+            },
+            onEachFeature: function(feature, layer) {
+                // 鼠标悬停显示禁区名称
+                layer.bindTooltip(feature.properties.name, { sticky: true });
+            }
+        }).addTo(App.map); // 这里的 App.map 是你初始化的地图对象
+    } catch (e) {
+        console.error("加载围栏失败:", e);
+    }
+},
 
     draw(id, coords) {
         const latlngs = coords.map(c => [c[1], c[0]]);

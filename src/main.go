@@ -274,6 +274,37 @@ func ListDevicesHandler(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+func FencesHandle(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+
+	// 使用 ST_AsGeoJSON 将空间对象转为前端可读的 JSON
+	query := `SELECT id, name, ST_AsGeoJSON(area) FROM fences`
+	rows, err := db.Query(query)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer rows.Close()
+
+	var features []string
+	for rows.Next() {
+		var id int
+		var name, geomJSON string
+		rows.Scan(&id, &name, &geomJSON)
+
+		// 拼装成标准的 GeoJSON Feature 格式
+		feature := fmt.Sprintf(`{
+            "type": "Feature",
+            "properties": {"id": %d, "name": "%s"},
+            "geometry": %s
+        }`, id, name, geomJSON)
+		features = append(features, feature)
+	}
+
+	fmt.Fprintf(w, `{"type": "FeatureCollection", "features": [%s]}`, strings.Join(features, ","))
+}
+
 func main() {
 	// 1. 环境变量读取（数据库在宿主机 172.17.0.1）
 	connStr := os.Getenv("DB_URL")
@@ -313,6 +344,7 @@ func main() {
 	http.HandleFunc("/history", HistoryHandle)
 	http.HandleFunc("/alarms", AlarmsHandle)
 	http.HandleFunc("/list", ListHandle)
+	http.HandleFunc("/fences", FencesHandle)
 
 	// 自动适配容器与本地路径
 	staticDir := "/app/static"
