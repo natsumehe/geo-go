@@ -185,7 +185,7 @@ func main() {
 	}()
 
 	// 启动主 HTTPS 服务
-	err = http.ListenAndServeTLS(port, "src/server.crt", "src/server.key", nil)
+	err = http.ListenAndServeTLS(port, "server.crt", "server.key", nil)
 	if err != nil {
 		log.Fatalf("❌ HTTPS 启动失败 (检查证书文件是否存在): %v", err)
 	}
