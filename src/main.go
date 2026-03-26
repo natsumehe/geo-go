@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 )
@@ -29,6 +30,21 @@ type LastPos struct {
 	Lat       float64
 	Lng       float64
 	Timestamp time.Time
+}
+
+var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+var clients = make(map[*websocket.Conn]bool) // 存储所有在线的管理端连接
+
+func WsHandler(w http.ResponseWriter, r *http.Request) {
+	conn, _ := upgrader.Upgrade(w, r, nil)
+	clients[conn] = true // 记录连接
+}
+
+// 在 checkFence 发现违规时调用
+func notifyClients(msg string) {
+	for client := range clients {
+		_ = client.WriteMessage(websocket.TextMessage, []byte(msg))
+	}
 }
 
 // HaversineDistance 计算两点间的距离（单位：米）
