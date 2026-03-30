@@ -12,6 +12,26 @@ const Collector = {
         this.setupUI();
     },
 
+    setupUI() {
+    const btn = document.getElementById('mainBtn');
+    if (!btn) {
+        console.error("找不到 ID 为 mainBtn 的按钮！");
+        return;
+    }
+
+    // 使用 addEventListener 替换直接赋值，确保可靠性
+    btn.addEventListener('click', (e) => {
+        e.preventDefault(); // 防止某些浏览器的默认行为
+        console.log("按钮被点击，当前 watchId:", this.watchId);
+        
+        if (!this.watchId) {
+            this.start();
+        } else {
+            this.stop();
+        }
+    });
+}
+
     getDeviceID() {
         let id = localStorage.getItem('geo_device_id'); // 统一 Key
         if (!id) {
