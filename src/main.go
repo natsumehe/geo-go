@@ -32,6 +32,14 @@ type LastPos struct {
 	Timestamp time.Time
 }
 
+type LocationReport struct {
+	DeviceID string  `json:"id"`
+	Lat      float64 `json:"lat"`
+	Lng      float64 `json:"lng"`
+	Provider string  `json:"provider"` // 新增
+	Accuracy float64 `json:"accuracy"` // 新增
+}
+
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 var clients = make(map[*websocket.Conn]bool) // 存储所有在线的管理端连接
 
@@ -89,7 +97,9 @@ func checkFence(driverID string, lng, lat float64) {
 
 // UpdateHandle 处理手机端 GPS 上报
 // UpdateHandle 处理手机端 GPS 上报 (已整合 sync.Map 过滤)
+// UpdateHandle 处理手机端 GPS 上报 (全量留存 + 业务过滤双轨制)
 func UpdateHandle(w http.ResponseWriter, r *http.Request) {
+	// --- 1. 跨域与基础校验 ---
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
@@ -99,12 +109,21 @@ func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// --- 2. 参数提取 (新增 provider 和 accuracy) ---
 	id := r.URL.Query().Get("id")
 	latStr := r.URL.Query().Get("lat")
 	lngStr := r.URL.Query().Get("lng")
 	if lngStr == "" {
 		lngStr = r.URL.Query().Get("lon")
 	}
+
+	// 获取定位模式和精度
+	provider := r.URL.Query().Get("provider") // 如: gps, wifi, ppp, network
+	if provider == "" {
+		provider = "unknown"
+	}
+	accStr := r.URL.Query().Get("accuracy") // 精度半径（米）
+	accuracy, _ := strconv.ParseFloat(accStr, 64)
 
 	if id == "" || lngStr == "" || latStr == "" {
 		http.Error(w, "Missing Parameters", http.StatusBadRequest)
@@ -114,54 +133,62 @@ func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 	lng, _ := strconv.ParseFloat(lngStr, 64)
 	lat, _ := strconv.ParseFloat(latStr, 64)
 
-	// --- 1. 更新 Redis 实时位置 (始终更新，保证监控屏实时性) ---
+	// --- 3. Redis 实时位置更新 (保证监控屏永远看到最新点) ---
 	if rdb != nil {
 		rdb.GeoAdd(ctx, "drivers:live", &redis.GeoLocation{
 			Name: id, Longitude: lng, Latitude: lat,
 		})
 	}
 
-	// --- 2. 内存过滤逻辑 (sync.Map) ---
-	shouldWriteDB := true
+	// --- 4. 业务逻辑过滤判定 (sync.Map) ---
+	// 目的：防止原地踏步产生大量重复点，污染前端显示的轨迹线
+	shouldWriteBusinessHistory := true
 	val, ok := posCache.Load(id)
 	if ok {
 		last := val.(LastPos)
 		dist := HaversineDistance(last.Lat, last.Lng, lat, lng)
-		// 阈值控制：移动小于 3 米 且 距离上次写入不足 10 秒，则不写数据库历史表
+		// 过滤条件：如果移动距离小于 3 米 且 距离上次上报不足 10 秒
 		if dist < 3.0 && time.Since(last.Timestamp) < 10*time.Second {
-			shouldWriteDB = false
+			shouldWriteBusinessHistory = false
 		}
 	}
 
-	// --- 3. 异步持久化与围栏检测 ---
-	go func(dID string, lo, la float64, writeDB bool) {
+	// --- 5. 异步双轨持久化 (不阻塞 HTTP 响应) ---
+	go func(dID string, lo, la float64, prov string, acc float64, isMoving bool) {
 		if db != nil {
-			// 始终执行 UPSERT 更新设备最后在线状态 (devices 表)
+			// A. 【原始表写入】—— 审计黑匣子，存下所有上报数据
+			rawSQL := `
+                INSERT INTO driver_raw_data (name, location, provider, accuracy, created_at)
+                VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), $4, $5, NOW())`
+			_, _ = db.Exec(rawSQL, dID, lo, la, prov, acc)
+
+			// B. 【设备状态更新】—— 维护 devices 表的最后在线位置
 			upsertSQL := `
-                INSERT INTO devices (device_id, last_lat, last_lng, last_seen)
-                VALUES ($1, $2, $3, NOW())
+                INSERT INTO devices (device_id, last_lat, last_lng, last_seen, last_provider)
+                VALUES ($1, $2, $3, NOW(), $4)
                 ON CONFLICT (device_id) 
-                DO UPDATE SET last_lat=$2, last_lng=$3, last_seen=NOW();`
-			_, _ = db.Exec(upsertSQL, dID, la, lo)
+                DO UPDATE SET last_lat=$2, last_lng=$3, last_seen=NOW(), last_provider=$4;`
+			_, _ = db.Exec(upsertSQL, dID, la, lo, prov)
 
-			// 只有当位置发生显著变化时，才写入历史轨迹和检测围栏
-			if writeDB {
+			// C. 【业务表写入】—— 仅存储有意义的移动轨迹
+			if isMoving {
 				historySQL := `
-                    INSERT INTO driver_history (name, location) 
-                    VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326))`
-				_, _ = db.Exec(historySQL, dID, lo, la)
+                    INSERT INTO driver_history (name, location, provider, accuracy, created_at) 
+                    VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), $4, $5, NOW())`
+				_, _ = db.Exec(historySQL, dID, lo, la, prov, acc)
 
-				// 更新缓存
+				// 更新内存缓存以便下次对比
 				posCache.Store(dID, LastPos{Lat: la, Lng: lo, Timestamp: time.Now()})
 
-				// 触发围栏检测
+				// 触发围栏检测（仅针对业务有效点）
 				checkFence(dID, lo, la)
 			}
 		}
-	}(id, lng, lat, shouldWriteDB)
+	}(id, lng, lat, provider, accuracy, shouldWriteBusinessHistory)
 
+	// --- 6. 响应客户端 ---
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "OK: %s Location Synced", id)
+	fmt.Fprintf(w, "OK: %s Location Synced via %s", id, provider)
 }
 
 func HistoryHandle(w http.ResponseWriter, r *http.Request) {

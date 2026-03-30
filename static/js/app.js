@@ -168,16 +168,36 @@ const App = {
 },
 
     draw(id, coords) {
-        const latlngs = coords.map(c => [c[1], c[0]]);
-        const last = latlngs[latlngs.length - 1];
+    // 假设你的接口现在也返回了精度数据，如果没有，可以默认设为 20
+    const latlngs = coords.map(c => [c[1], c[0]]);
+    const last = latlngs[latlngs.length - 1];
 
-        if (!this.layers.line) {
-            this.layers.line = L.polyline(latlngs, { color: '#00f2ff', weight: 4, opacity: 0.6 }).addTo(this.map);
-            this.layers.marker = L.circleMarker(last, { radius: 8, color: '#fff', fillColor: '#00f2ff', fillOpacity: 1 }).addTo(this.map);
-            this.map.panTo(last);
-        } else {
-            this.layers.line.setLatLngs(latlngs);
-            this.layers.marker.setLatLng(last);
+    if (!this.layers.line) {
+        this.layers.line = L.polyline(latlngs, { color: '#00f2ff', weight: 4, opacity: 0.6 }).addTo(this.map);
+        
+        // 核心：创建一个 LayerGroup 来同时容纳中心点和精度圆
+        this.layers.marker = L.layerGroup().addTo(this.map);
+        
+        // 1. 绘制精度半径圆 (半透明蓝色)
+        this.accCircle = L.circle(last, {
+            radius: 20, // 初始值，后续随数据更新
+            color: '#00f2ff',
+            fillColor: '#00f2ff',
+            fillOpacity: 0.15,
+            weight: 1
+        }).addTo(this.layers.marker);
+
+        // 2. 绘制中心实点
+        this.centerDot = L.circleMarker(last, { 
+            radius: 6, color: '#fff', fillColor: '#00f2ff', fillOpacity: 1 
+        }).addTo(this.layers.marker);
+
+        this.map.panTo(last);
+    } else {
+        this.layers.line.setLatLngs(latlngs);
+        this.accCircle.setLatLng(last);
+        this.centerDot.setLatLng(last);
+        this.accCircle.setRadius(latestAcc);
         }
     }
 };
