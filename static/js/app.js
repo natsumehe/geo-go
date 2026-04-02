@@ -71,24 +71,28 @@ const App = {
 
     renderCards(devices) {
     const container = document.getElementById('device-swiper');
-    // 如果数据库是空的，提示用户
-    if (devices.length === 0) {
-        container.innerHTML = '<div class="swiper-slide">DATABASE EMPTY</div>';
+    // 过滤空数据
+    const validDevices = devices.filter(d => d && d.length > 0);
+    
+    if (!container || validDevices.length === 0) {
+        container.innerHTML = '<div class="swiper-slide">等待数据库同步...</div>';
         return;
     }
 
-    container.innerHTML = devices.map(id => `
-        <div class="swiper-slide" data-id="${id}" onclick="App.selectDevice('${id}')">
+    container.innerHTML = validDevices.map(id => `
+        <div class="swiper-slide ${id === this.currentID ? 'active' : ''}" data-id="${id}">
+            <div class="slide-tag">已发现设备</div>
             <div class="slide-id">${id}</div>
-            <div class="slide-tag">DATABASE RECORD</div>
+            <div class="slide-status">● 数据库记录</div>
         </div>
     `).join('');
 
-    // 负责人逻辑：自动加载数据库里的第一个 ID
-    if (!this.currentID) {
-        this.selectDevice(devices[0]);
+    // --- 核心修复：如果当前没有选中任何设备，自动选中数据库返回的第一个 ---
+    if (!this.currentID && validDevices.length > 0) {
+        console.log("🎯 自动锁定数据库目标:", validDevices[0]);
+        this.selectDevice(validDevices[0]);
     }
-},
+    },
 
     bindSwiper() {
         const swiper = document.getElementById('device-swiper');

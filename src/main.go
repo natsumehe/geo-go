@@ -239,22 +239,26 @@ func AlarmsHandle(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "[%s]", strings.Join(results, ","))
 }
 
+// 后端 ListHandle 建议
 func ListHandle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	rows, err := db.Query("SELECT device_id, last_seen FROM devices ORDER BY last_seen DESC")
+	// 从历史记录里提取所有不重复的设备名
+	rows, err := db.Query("SELECT DISTINCT name FROM driver_history")
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 	defer rows.Close()
 
-	devices := []string{}
+	var ids []string
 	for rows.Next() {
-		var n string
-		rows.Scan(&n)
-		devices = append(devices, n)
+		var id string
+		rows.Scan(&id)
+		if id != "" {
+			ids = append(ids, id)
+		}
 	}
-	json.NewEncoder(w).Encode(devices)
+	json.NewEncoder(w).Encode(ids)
 }
 
 // UpdateLocationHandler 处理来自手机的 /update 请求
