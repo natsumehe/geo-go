@@ -205,7 +205,6 @@ func HistoryHandle(w http.ResponseWriter, r *http.Request) {
             SELECT location, created_at FROM driver_history 
             WHERE name = $1 
             ORDER BY created_at DESC 
-            LIMIT 100
         ) AS subquery`
 
 	var geoJSON string

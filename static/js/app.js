@@ -82,6 +82,10 @@ const App = {
                 <div class="slide-status">● ONLINE</div>
             </div>
         `).join('');
+
+        if (!this.currentID && devices.length > 0) {
+        this.selectDevice(devices[0]);
+    }
     },
 
     bindSwiper() {
@@ -193,6 +197,7 @@ async updateDevices() {
 
     if (!this.layers.line) {
         this.layers.line = L.polyline(latlngs, { color: '#00f2ff', weight: 4, opacity: 0.6 }).addTo(this.map);
+        this.map.fitBounds(this.layers.line.getBounds());
         
         // 核心：创建一个 LayerGroup 来同时容纳中心点和精度圆
         this.layers.marker = L.layerGroup().addTo(this.map);
