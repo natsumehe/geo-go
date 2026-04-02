@@ -36,7 +36,6 @@ const App = {
         return id;
     },
     init() {
-        this.id = this.getDeviceID();
         document.getElementById('device-info').innerText = `DEVICE ID: ${this.id}`;
         this.initMap();
         this.startDiscovery();
@@ -71,22 +70,25 @@ const App = {
     },
 
     renderCards(devices) {
-        const container = document.getElementById('device-swiper');
-        if (!container || devices.length === 0) return;
+    const container = document.getElementById('device-swiper');
+    // 如果数据库是空的，提示用户
+    if (devices.length === 0) {
+        container.innerHTML = '<div class="swiper-slide">DATABASE EMPTY</div>';
+        return;
+    }
 
-        // 保存当前滚动位置防止刷新时跳动
-        container.innerHTML = devices.map(id => `
-            <div class="swiper-slide ${id === this.currentID ? 'active' : ''}" data-id="${id}">
-                <div class="slide-tag">ACTIVE DEVICE</div>
-                <div class="slide-id">${id}</div>
-                <div class="slide-status">● ONLINE</div>
-            </div>
-        `).join('');
+    container.innerHTML = devices.map(id => `
+        <div class="swiper-slide" data-id="${id}" onclick="App.selectDevice('${id}')">
+            <div class="slide-id">${id}</div>
+            <div class="slide-tag">DATABASE RECORD</div>
+        </div>
+    `).join('');
 
-        if (!this.currentID && devices.length > 0) {
+    // 负责人逻辑：自动加载数据库里的第一个 ID
+    if (!this.currentID) {
         this.selectDevice(devices[0]);
     }
-    },
+},
 
     bindSwiper() {
         const swiper = document.getElementById('device-swiper');
@@ -198,7 +200,7 @@ async updateDevices() {
     if (!this.layers.line) {
         this.layers.line = L.polyline(latlngs, { color: '#00f2ff', weight: 4, opacity: 0.6 }).addTo(this.map);
         this.map.fitBounds(this.layers.line.getBounds());
-        
+
         // 核心：创建一个 LayerGroup 来同时容纳中心点和精度圆
         this.layers.marker = L.layerGroup().addTo(this.map);
         
