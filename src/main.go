@@ -242,7 +242,7 @@ func AlarmsHandle(w http.ResponseWriter, r *http.Request) {
 
 func ListHandle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	rows, err := db.Query("SELECT DISTINCT name FROM driver_history WHERE created_at > NOW() - INTERVAL '24 hours'")
+	rows, err := db.Query("SELECT device_id, last_seen FROM devices ORDER BY last_seen DESC")
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return

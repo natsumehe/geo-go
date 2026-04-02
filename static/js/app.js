@@ -142,6 +142,25 @@ const App = {
         } catch (e) { console.error("Track error", e); }
     },
 
+    
+async updateDevices() {
+    const res = await fetch('/list');
+    const ids = await res.json();
+    const container = document.getElementById('device-swiper');
+    
+    if (ids.length === 0) {
+        container.innerHTML = '<div class="swiper-slide">无活跃设备</div>';
+        return;
+    }
+
+    container.innerHTML = ids.map(id => `
+        <div class="swiper-slide" onclick="loadHistory('${id}')">
+            <div class="slide-id">${id}</div>
+            <div class="slide-tag">HUAWEI MATE 40E</div>
+        </div>
+    `).join('');
+},
+
     async  loadFences() {
     try {
         const res = await fetch('/fences');
