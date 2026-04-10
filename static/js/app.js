@@ -197,46 +197,19 @@ async updateDevices() {
 },
 
     draw(id, data) {
-    // 1. 数据归一化：不管后端给的是对象还是纯数组，都统一提取出坐标数组
-    let rawCoordinates = [];
-    if (Array.isArray(data)) {
-        rawCoordinates = data; // 直接就是数组 [ [lng, lat], ... ]
-    } else if (data && data.coordinates) {
-        rawCoordinates = data.coordinates; // GeoJSON 格式
-    }
+    // 1. 数据校验与格式化
+    if (!Array.isArray(data) || data.length === 0) return;
 
-    if (!rawCoordinates || rawCoordinates.length === 0) {
-        console.warn("轨迹数据为空");
-        return;
-    }
-
-    // 2. 核心：展示侧卡尔曼滤波 (前端实时计算)
-    // 我们定义一个简单的滤波器函数
-    const kalmanFilter = (points) => {
-        let lastLat = points[0][1], lastLng = points[0][0];
-        let p = 1.0, q = 0.000001, r = 0.0001; 
-        
-        return points.map(coord => {
-            p = p + q;
-            let k = p / (p + r);
-            lastLat = lastLat + k * (coord[1] - lastLat);
-            lastLng = lastLng + k * (coord[0] - lastLng);
-            p = (1 - k) * p;
-            return [lastLat, lastLng]; // 返回 Leaflet 需要的 [lat, lng]
-        });
-    };
-
-    // 执行滤波得到平滑路径
-    const latlngs = kalmanFilter(rawCoordinates);
+    // 直接转换坐标序：[lng, lat] -> [lat, lng]
+    const latlngs = data.map(coord => [coord[1], coord[0]]);
     const lastPoint = latlngs[latlngs.length - 1];
 
-    // 3. 渲染逻辑
+    // 2. 纯粹渲染，不带任何算法
     if (!this.layers.line) {
         this.layers.line = L.polyline(latlngs, { 
             color: '#00f2ff', 
             weight: 4, 
-            opacity: 0.8,
-            lineJoin: 'round'
+            opacity: 0.8 
         }).addTo(this.map);
         
         this.marker = L.circleMarker(lastPoint, { 
