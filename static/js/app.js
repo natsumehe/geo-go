@@ -197,28 +197,52 @@ async updateDevices() {
 },
 
     draw(id, coords) {
-    // coords 结构建议包含：raw_lng, raw_lat, smooth_lng, smooth_lat
-    const rawPath = coords.map(c => [c.raw_lat, c.raw_lng]);
-    const smoothPath = coords.map(c => [c.smooth_lat, c.smooth_lng]);
+    if (!coords || coords.length === 0) return;
+
+    // 1. 安全过滤：确保每一行数据都是完整的
+    // 适配后端：如果后端返回的是 ST_AsGeoJSON 格式或自定义 JSON 格式
+    const validCoords = coords.filter(c => c && (c.lat || c.smooth_lat));
+
+    // 2. 构造平滑路径和原始路径
+    // 注意：这里的字段名必须与你 Go 后端 JSON 序列化后的字段名【完全一致】
+    const smoothPath = validCoords.map(c => {
+        const lat = c.smooth_lat || c.lat; // 兜底：如果没有平滑值就用原始值
+        const lng = c.smooth_lng || c.lng;
+        if (lat === undefined || lng === undefined) return null;
+        return [lat, lng];
+    }).filter(p => p !== null); // 再次过滤掉无效点
+
+    const rawPath = validCoords.map(c => {
+        const lat = c.lat;
+        const lng = c.lng;
+        if (lat === undefined || lng === undefined) return null;
+        return [lat, lng];
+    }).filter(p => p !== null);
+
+    if (smoothPath.length === 0) return;
+
     const last = smoothPath[smoothPath.length - 1];
 
-    // 1. 绘制原始轨迹 (辅助线)
+    // 3. 渲染逻辑
+    // 渲染原始轨迹 (灰色虚线)
     if (!this.layers.rawLine) {
         this.layers.rawLine = L.polyline(rawPath, { 
-            color: '#ffffff', weight: 2, opacity: 0.3, dashArray: '5, 5' 
+            color: '#ffffff', weight: 1, opacity: 0.2, dashArray: '5, 5' 
         }).addTo(this.map);
     } else {
         this.layers.rawLine.setLatLngs(rawPath);
     }
 
-    // 2. 绘制平滑轨迹 (主线)
+    // 渲染平滑轨迹 (霓虹蓝实线)
     if (!this.layers.line) {
         this.layers.line = L.polyline(smoothPath, { 
             color: '#00f2ff', weight: 4, opacity: 0.8 
         }).addTo(this.map);
         
-        // 标记当前点
-        this.marker = L.circleMarker(last, { radius: 6, color: '#fff', fillColor: '#00f2ff', fillOpacity: 1 }).addTo(this.map);
+        this.marker = L.circleMarker(last, { 
+            radius: 6, color: '#fff', fillColor: '#00f2ff', fillOpacity: 1 
+        }).addTo(this.map);
+        
         this.map.panTo(last);
     } else {
         this.layers.line.setLatLngs(smoothPath);
