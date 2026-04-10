@@ -196,57 +196,53 @@ async updateDevices() {
     }
 },
 
-    draw(id, coords) {
-    if (!coords || coords.length === 0) return;
-
-    // 1. 安全过滤：确保每一行数据都是完整的
-    // 适配后端：如果后端返回的是 ST_AsGeoJSON 格式或自定义 JSON 格式
-    const validCoords = coords.filter(c => c && (c.lat || c.smooth_lat));
-
-    // 2. 构造平滑路径和原始路径
-    // 注意：这里的字段名必须与你 Go 后端 JSON 序列化后的字段名【完全一致】
-    const smoothPath = validCoords.map(c => {
-        const lat = c.smooth_lat || c.lat; // 兜底：如果没有平滑值就用原始值
-        const lng = c.smooth_lng || c.lng;
-        if (lat === undefined || lng === undefined) return null;
-        return [lat, lng];
-    }).filter(p => p !== null); // 再次过滤掉无效点
-
-    const rawPath = validCoords.map(c => {
-        const lat = c.lat;
-        const lng = c.lng;
-        if (lat === undefined || lng === undefined) return null;
-        return [lat, lng];
-    }).filter(p => p !== null);
-
-    if (smoothPath.length === 0) return;
-
-    const last = smoothPath[smoothPath.length - 1];
-
-    // 3. 渲染逻辑
-    // 渲染原始轨迹 (灰色虚线)
-    if (!this.layers.rawLine) {
-        this.layers.rawLine = L.polyline(rawPath, { 
-            color: '#ffffff', weight: 1, opacity: 0.2, dashArray: '5, 5' 
-        }).addTo(this.map);
-    } else {
-        this.layers.rawLine.setLatLngs(rawPath);
+    draw(id, geoData) {
+    // 1. 基础校验：检查 GeoJSON 结构
+    if (!geoData || geoData.type !== "LineString" || !geoData.coordinates) {
+        console.warn("无效的轨迹数据格式", geoData);
+        return;
     }
 
-    // 渲染平滑轨迹 (霓虹蓝实线)
+    // 2. 数据处理：将 [lng, lat] 转换为 Leaflet 需要的 [lat, lng]
+    // 顺便在这里可以进行简单的“展示滤波”（比如跳过漂移过大的点）
+    const latlngs = geoData.coordinates.map(coord => {
+        const lng = coord[0];
+        const lat = coord[1];
+        
+        // 基本合法性校验
+        if (isNaN(lat) || isNaN(lng)) return null;
+        return [lat, lng]; 
+    }).filter(p => p !== null);
+
+    if (latlngs.length === 0) {
+        console.log("无有效坐标点可绘制");
+        return;
+    }
+
+    // 3. 渲染轨迹线
     if (!this.layers.line) {
-        this.layers.line = L.polyline(smoothPath, { 
-            color: '#00f2ff', weight: 4, opacity: 0.8 
+        // 第一次渲染：创建 Polyline
+        this.layers.line = L.polyline(latlngs, { 
+            color: '#00f2ff', // 霓虹蓝
+            weight: 4, 
+            opacity: 0.8,
+            lineJoin: 'round',
+            smoothFactor: 1.0 // Leaflet 自带的展示平滑因子
         }).addTo(this.map);
         
-        this.marker = L.circleMarker(last, { 
+        // 添加实时位置点
+        const lastPoint = latlngs[latlngs.length - 1];
+        this.marker = L.circleMarker(lastPoint, { 
             radius: 6, color: '#fff', fillColor: '#00f2ff', fillOpacity: 1 
         }).addTo(this.map);
-        
-        this.map.panTo(last);
+
+        // 自动缩放视角以包含整条线
+        this.map.fitBounds(this.layers.line.getBounds(), { padding: [50, 50] });
     } else {
-        this.layers.line.setLatLngs(smoothPath);
-        this.marker.setLatLng(last);
+        // 后续更新：直接更新路径，不重绘整个图层
+        this.layers.line.setLatLngs(latlngs);
+        const lastPoint = latlngs[latlngs.length - 1];
+        this.marker.setLatLng(lastPoint);
     }
 }}
 ;
