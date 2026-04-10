@@ -197,37 +197,32 @@ async updateDevices() {
 },
 
     draw(id, coords) {
-    const latlngs = coords.map(c => [c[1], c[0]]);
-    const last = latlngs[latlngs.length - 1];
-    
-    // 这里设置一个默认精度，或者如果你后端返回了精度，可以用后端的数据
-    const currentAccuracy = 20; 
+    // coords 结构建议包含：raw_lng, raw_lat, smooth_lng, smooth_lat
+    const rawPath = coords.map(c => [c.raw_lat, c.raw_lng]);
+    const smoothPath = coords.map(c => [c.smooth_lat, c.smooth_lng]);
+    const last = smoothPath[smoothPath.length - 1];
 
+    // 1. 绘制原始轨迹 (辅助线)
+    if (!this.layers.rawLine) {
+        this.layers.rawLine = L.polyline(rawPath, { 
+            color: '#ffffff', weight: 2, opacity: 0.3, dashArray: '5, 5' 
+        }).addTo(this.map);
+    } else {
+        this.layers.rawLine.setLatLngs(rawPath);
+    }
+
+    // 2. 绘制平滑轨迹 (主线)
     if (!this.layers.line) {
-        this.layers.line = L.polyline(latlngs, { color: '#00f2ff', weight: 4, opacity: 0.6 }).addTo(this.map);
-        this.layers.marker = L.layerGroup().addTo(this.map);
+        this.layers.line = L.polyline(smoothPath, { 
+            color: '#00f2ff', weight: 4, opacity: 0.8 
+        }).addTo(this.map);
         
-        this.accCircle = L.circle(last, {
-            radius: currentAccuracy, 
-            color: '#00f2ff',
-            fillColor: '#00f2ff',
-            fillOpacity: 0.15,
-            weight: 1
-        }).addTo(this.layers.marker);
-
-        this.centerDot = L.circleMarker(last, { 
-            radius: 6, color: '#fff', fillColor: '#00f2ff', fillOpacity: 1 
-        }).addTo(this.layers.marker);
-
+        // 标记当前点
+        this.marker = L.circleMarker(last, { radius: 6, color: '#fff', fillColor: '#00f2ff', fillOpacity: 1 }).addTo(this.map);
         this.map.panTo(last);
     } else {
-        // --- 核心修复：更新经纬度和半径 ---
-        this.layers.line.setLatLngs(latlngs);
-        this.accCircle.setLatLng(last);
-        this.centerDot.setLatLng(last);
-        
-        // 修正：使用上面定义的变量名
-        this.accCircle.setRadius(currentAccuracy); 
+        this.layers.line.setLatLngs(smoothPath);
+        this.marker.setLatLng(last);
     }
 }}
 ;

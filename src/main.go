@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"geo-go/filters"
 	"log"
 	"math"
 	"net/http"
@@ -39,6 +40,17 @@ type LocationReport struct {
 	Provider string  `json:"provider"` // 新增
 	Accuracy float64 `json:"accuracy"` // 新增
 }
+
+type DeviceFilters struct {
+	LatKF *filters.KalmanFilter
+	LngKF *filters.KalmanFilter
+}
+
+var (
+	// 内存存储：Key 是 DeviceID, Value 是 *DeviceFilters
+	// 这种设计避免了频繁读写数据库，保证了算法响应的毫秒级
+	kfStore = sync.Map{}
+)
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 var clients = make(map[*websocket.Conn]bool) // 存储所有在线的管理端连接
@@ -99,17 +111,16 @@ func checkFence(driverID string, lng, lat float64) {
 // UpdateHandle 处理手机端 GPS 上报 (已整合 sync.Map 过滤)
 // UpdateHandle 处理手机端 GPS 上报 (全量留存 + 业务过滤双轨制)
 func UpdateHandle(w http.ResponseWriter, r *http.Request) {
-	// --- 1. 跨域与基础校验 ---
+	// --- 1. 跨域与基础校验 --- (保持不变)
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	// --- 2. 参数提取 (新增 provider 和 accuracy) ---
+	// --- 2. 参数提取 ---
 	id := r.URL.Query().Get("id")
 	latStr := r.URL.Query().Get("lat")
 	lngStr := r.URL.Query().Get("lng")
@@ -117,13 +128,16 @@ func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 		lngStr = r.URL.Query().Get("lon")
 	}
 
-	// 获取定位模式和精度
-	provider := r.URL.Query().Get("provider") // 如: gps, wifi, ppp, network
+	provider := r.URL.Query().Get("provider")
 	if provider == "" {
 		provider = "unknown"
 	}
-	accStr := r.URL.Query().Get("accuracy") // 精度半径（米）
+
+	accStr := r.URL.Query().Get("accuracy")
 	accuracy, _ := strconv.ParseFloat(accStr, 64)
+	if accuracy <= 0 {
+		accuracy = 20.0
+	} // 默认精度
 
 	if id == "" || lngStr == "" || latStr == "" {
 		http.Error(w, "Missing Parameters", http.StatusBadRequest)
@@ -133,62 +147,70 @@ func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 	lng, _ := strconv.ParseFloat(lngStr, 64)
 	lat, _ := strconv.ParseFloat(latStr, 64)
 
-	// --- 3. Redis 实时位置更新 (保证监控屏永远看到最新点) ---
+	// --- 3. 【核心增强】卡尔曼平滑计算 ---
+	// 获取或创建滤波器
+	valKF, _ := kfStore.LoadOrStore(id, &DeviceFilters{
+		LatKF: &filters.KalmanFilter{LastValue: lat, P: 1.0, Q: 0.000001, R: 0.0001},
+		LngKF: &filters.KalmanFilter{LastValue: lng, P: 1.0, Q: 0.000001, R: 0.0001},
+	})
+	kf := valKF.(*DeviceFilters)
+
+	// 得到平滑后的坐标
+	smoothLat := kf.LatKF.SmartUpdate(lat, accuracy)
+	smoothLng := kf.LngKF.SmartUpdate(lng, accuracy)
+
+	// --- 4. Redis 实时位置更新 (显示平滑后的点，视觉更顺滑) ---
 	if rdb != nil {
 		rdb.GeoAdd(ctx, "drivers:live", &redis.GeoLocation{
-			Name: id, Longitude: lng, Latitude: lat,
+			Name: id, Longitude: smoothLng, Latitude: smoothLat,
 		})
 	}
 
-	// --- 4. 业务逻辑过滤判定 (sync.Map) ---
-	// 目的：防止原地踏步产生大量重复点，污染前端显示的轨迹线
+	// --- 5. 业务逻辑过滤判定 ---
+	// 使用平滑后的坐标进行距离计算，过滤效果更准确
 	shouldWriteBusinessHistory := true
-	val, ok := posCache.Load(id)
+	valCache, ok := posCache.Load(id)
 	if ok {
-		last := val.(LastPos)
-		dist := HaversineDistance(last.Lat, last.Lng, lat, lng)
-		// 过滤条件：如果移动距离小于 3 米 且 距离上次上报不足 10 秒
+		last := valCache.(LastPos)
+		dist := HaversineDistance(last.Lat, last.Lng, smoothLat, smoothLng)
+		// 过滤：平滑后移动不足 3 米 且 时间不足 10s 则不记入历史
 		if dist < 3.0 && time.Since(last.Timestamp) < 10*time.Second {
 			shouldWriteBusinessHistory = false
 		}
 	}
 
-	// --- 5. 异步双轨持久化 (不阻塞 HTTP 响应) ---
-	go func(dID string, lo, la float64, prov string, acc float64, isMoving bool) {
+	// --- 6. 异步双轨持久化 ---
+	go func(dID string, rawLo, rawLa, smLo, smLa float64, prov string, acc float64, isMoving bool) {
 		if db != nil {
-			// A. 【原始表写入】—— 审计黑匣子，存下所有上报数据
-			rawSQL := `
-                INSERT INTO driver_raw_data (name, location, provider, accuracy, created_at)
-                VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), $4, $5, NOW())`
-			_, _ = db.Exec(rawSQL, dID, lo, la, prov, acc)
+			// A. 【原始表】存下最真实的、带噪声的数据（审计用）
+			rawSQL := `INSERT INTO driver_raw_data (name, location, provider, accuracy, created_at)
+                       VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), $4, $5, NOW())`
+			_, _ = db.Exec(rawSQL, dID, rawLo, rawLa, prov, acc)
 
-			// B. 【设备状态更新】—— 维护 devices 表的最后在线位置
-			upsertSQL := `
-                INSERT INTO devices (device_id, last_lat, last_lng, last_seen, last_provider)
-                VALUES ($1, $2, $3, NOW(), $4)
-                ON CONFLICT (device_id) 
-                DO UPDATE SET last_lat=$2, last_lng=$3, last_seen=NOW(), last_provider=$4;`
-			_, _ = db.Exec(upsertSQL, dID, la, lo, prov)
+			// B. 【设备状态】存下当前最新的平滑位置
+			upsertSQL := `INSERT INTO devices (device_id, last_lat, last_lng, last_seen, last_provider)
+                          VALUES ($1, $2, $3, NOW(), $4)
+                          ON CONFLICT (device_id) DO UPDATE SET last_lat=$2, last_lng=$3, last_seen=NOW();`
+			_, _ = db.Exec(upsertSQL, dID, smLa, smLo, prov)
 
-			// C. 【业务表写入】—— 仅存储有意义的移动轨迹
+			// C. 【业务历史】仅存储平滑后的轨迹点
 			if isMoving {
-				historySQL := `
-                    INSERT INTO driver_history (name, location, provider, accuracy, created_at) 
-                    VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), $4, $5, NOW())`
-				_, _ = db.Exec(historySQL, dID, lo, la, prov, acc)
+				historySQL := `INSERT INTO driver_history (name, location, provider, accuracy, created_at) 
+                               VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), $4, $5, NOW())`
+				_, _ = db.Exec(historySQL, dID, smLo, smLa, prov, acc)
 
-				// 更新内存缓存以便下次对比
-				posCache.Store(dID, LastPos{Lat: la, Lng: lo, Timestamp: time.Now()})
+				// 更新缓存
+				posCache.Store(dID, LastPos{Lat: smLa, Lng: smLo, Timestamp: time.Now()})
 
-				// 触发围栏检测（仅针对业务有效点）
-				checkFence(dID, lo, la)
+				// 触发围栏检测（使用平滑坐标减少误报）
+				checkFence(dID, smLo, smLa)
 			}
 		}
-	}(id, lng, lat, provider, accuracy, shouldWriteBusinessHistory)
+	}(id, lng, lat, smoothLng, smoothLat, provider, accuracy, shouldWriteBusinessHistory)
 
-	// --- 6. 响应客户端 ---
+	// --- 7. 响应客户端 ---
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "OK: %s Location Synced via %s", id, provider)
+	fmt.Fprintf(w, "OK: %s Location Filtered & Synced", id)
 }
 
 func HistoryHandle(w http.ResponseWriter, r *http.Request) {
