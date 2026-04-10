@@ -196,52 +196,56 @@ async updateDevices() {
     }
 },
 
-    draw(id, geoData) {
-    // 1. 基础校验：检查 GeoJSON 结构
-    if (!geoData || geoData.type !== "LineString" || !geoData.coordinates) {
-        console.warn("无效的轨迹数据格式", geoData);
+    draw(id, data) {
+    // 1. 数据归一化：不管后端给的是对象还是纯数组，都统一提取出坐标数组
+    let rawCoordinates = [];
+    if (Array.isArray(data)) {
+        rawCoordinates = data; // 直接就是数组 [ [lng, lat], ... ]
+    } else if (data && data.coordinates) {
+        rawCoordinates = data.coordinates; // GeoJSON 格式
+    }
+
+    if (!rawCoordinates || rawCoordinates.length === 0) {
+        console.warn("轨迹数据为空");
         return;
     }
 
-    // 2. 数据处理：将 [lng, lat] 转换为 Leaflet 需要的 [lat, lng]
-    // 顺便在这里可以进行简单的“展示滤波”（比如跳过漂移过大的点）
-    const latlngs = geoData.coordinates.map(coord => {
-        const lng = coord[0];
-        const lat = coord[1];
+    // 2. 核心：展示侧卡尔曼滤波 (前端实时计算)
+    // 我们定义一个简单的滤波器函数
+    const kalmanFilter = (points) => {
+        let lastLat = points[0][1], lastLng = points[0][0];
+        let p = 1.0, q = 0.000001, r = 0.0001; 
         
-        // 基本合法性校验
-        if (isNaN(lat) || isNaN(lng)) return null;
-        return [lat, lng]; 
-    }).filter(p => p !== null);
+        return points.map(coord => {
+            p = p + q;
+            let k = p / (p + r);
+            lastLat = lastLat + k * (coord[1] - lastLat);
+            lastLng = lastLng + k * (coord[0] - lastLng);
+            p = (1 - k) * p;
+            return [lastLat, lastLng]; // 返回 Leaflet 需要的 [lat, lng]
+        });
+    };
 
-    if (latlngs.length === 0) {
-        console.log("无有效坐标点可绘制");
-        return;
-    }
+    // 执行滤波得到平滑路径
+    const latlngs = kalmanFilter(rawCoordinates);
+    const lastPoint = latlngs[latlngs.length - 1];
 
-    // 3. 渲染轨迹线
+    // 3. 渲染逻辑
     if (!this.layers.line) {
-        // 第一次渲染：创建 Polyline
         this.layers.line = L.polyline(latlngs, { 
-            color: '#00f2ff', // 霓虹蓝
+            color: '#00f2ff', 
             weight: 4, 
             opacity: 0.8,
-            lineJoin: 'round',
-            smoothFactor: 1.0 // Leaflet 自带的展示平滑因子
+            lineJoin: 'round'
         }).addTo(this.map);
         
-        // 添加实时位置点
-        const lastPoint = latlngs[latlngs.length - 1];
         this.marker = L.circleMarker(lastPoint, { 
             radius: 6, color: '#fff', fillColor: '#00f2ff', fillOpacity: 1 
         }).addTo(this.map);
 
-        // 自动缩放视角以包含整条线
-        this.map.fitBounds(this.layers.line.getBounds(), { padding: [50, 50] });
+        this.map.panTo(lastPoint);
     } else {
-        // 后续更新：直接更新路径，不重绘整个图层
         this.layers.line.setLatLngs(latlngs);
-        const lastPoint = latlngs[latlngs.length - 1];
         this.marker.setLatLng(lastPoint);
     }
 }}
