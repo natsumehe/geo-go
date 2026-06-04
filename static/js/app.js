@@ -46,23 +46,22 @@ const App = {
 
     
     initMap() {
-    // 1. 初始化地图画布，开启 Canvas 提升上报点性能
+    // 1. 初始化地图画布
     this.map = L.map('map', { 
         attributionControl: false, 
         zoomControl: false,
         renderer: L.canvas() 
-    }).setView([31.235, 121.485], 14); // 默认定位上海市中心
+    }).setView([31.235, 121.485], 14);
 
-    // 2. 【核心校正】直接将你的路网底图，以标准的图片/矢量瓦片图层形式垫在最底层
-    // 这里指向你新绑定的域名 www.point.xyz（或者你的公网 IP）
-    // 只要你的服务器上配置了标准的 OSM 瓦片静态路由，Leaflet 会自动根据 {z}/{x}/{y} 去拼接并平滑加载上海路网
-    L.tileLayer('https://www.point.xyz/api/tiles/{z}/{x}/{y}.png', {
+    // 2. 【严格修复】使用标准单引号字符串，切勿使用反引号
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
         maxZoom: 18,
         minZoom: 10,
-        errorTileUrl: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png' // 如果本地瓦片没切全，自动用暗黑底图兜底
+        subdomains: 'abcd',
+        r: '@2x' // 高清屏适配，如果不需要可以删去此行及 URL 中的 {r}
     }).addTo(this.map);
-    
-    console.log("上海本地 OSM 数据路网底图载入成功");
+
+    console.log("OSM 纯净暗黑路网底图载入成功");
 },
 
     // 自动发现活跃设备
