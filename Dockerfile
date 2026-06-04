@@ -21,6 +21,8 @@ COPY --from=builder /app/static ./static
 COPY --from=builder /app/server.crt .
 COPY --from=builder /app/server.key .
 
+ENV VALHALLA_URL=http://valhalla-service:8002
+
 EXPOSE 8080
 EXPOSE 443
 CMD ["./geo-server"]
