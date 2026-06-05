@@ -2,186 +2,58 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>高精度车辆监控与地理围栏系统</title>
+    <title>Geo-Go 高精度车辆监控与地理围栏系统</title>
     <link href="https://unpkg.com/maplibre-gl@4.1.2/dist/maplibre-gl.css" rel="stylesheet" />
     <script src="https://unpkg.com/maplibre-gl@4.1.2/dist/maplibre-gl.js"></script>
     <style>
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: sans-serif; }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: sans-serif; background: #111; }
         #map { width: 100%; height: 100%; position: absolute; top: 0; bottom: 0; }
+        
+        /* 科技感大屏幕监控面板 */
         #panel {
             position: absolute; top: 20px; left: 20px; z-index: 10;
-            background: rgba(255, 255, 255, 0.95); padding: 15px;
-            border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            width: 280px;
+            background: rgba(20, 20, 20, 0.9); padding: 15px;
+            border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            width: 300px; border: 1px solid #333; color: #fff;
         }
-        h3 { margin-top: 0; color: #333; border-bottom: 2px solid #007cbf; padding-bottom: 5px; }
-        .log-item { font-size: 12px; margin-bottom: 6px; padding: 6px; background: #f5f5f5; border-left: 3px solid #ff3333; border-radius: 2px; }
-        #alarm-logs { max-height: 150px; overflow-y: auto; margin-top: 10px; }
-        .device-slide { padding: 6px; background: #f0f4f8; margin-top: 4px; border-radius: 4px; font-size: 12px; cursor: pointer; }
-        .device-slide.active { background: #007cbf; color: white; font-weight: bold; }
+        h3 { margin-top: 0; color: #00d2ff; border-bottom: 2px solid #007cbf; padding-bottom: 5px; font-size: 16px; }
+        #status { font-size: 12px; color: #aaa; margin-bottom: 10px; }
+        #device-info { font-size: 11px; color: #2ecc71; font-family: monospace; margin-bottom: 8px; }
+        
+        /* 车辆选择列表容器 */
+        #device-swiper { 
+            max-height: 120px; overflow-y: auto; margin-bottom: 10px; 
+            border: 1px solid #222; padding: 4px; background: rgba(0,0,0,0.3);
+        }
+        .swiper-slide { 
+            padding: 8px; background: #1a1a1a; margin-top: 4px; border-radius: 4px; 
+            font-size: 12px; cursor: pointer; border-left: 3px solid #555; transition: all 0.2s;
+        }
+        .swiper-slide:hover { background: #222; }
+        .swiper-slide.active { background: #007cbf; color: white; font-weight: bold; border-left: 3px solid #00d2ff; }
+        .slide-tag { font-size: 10px; color: #888; }
+        
+        /* 报警历史区域 */
+        #alarm-logs { max-height: 150px; overflow-y: auto; margin-top: 10px; border-top: 1px solid #333; padding-top: 8px; }
+        .log-item { font-size: 11px; margin-bottom: 6px; padding: 6px; background: rgba(255, 51, 51, 0.1); border-left: 3px solid #ff3333; border-radius: 2px; color: #ff9999; }
     </style>
 </head>
 <body>
 
 <div id="panel">
-    <h3>实时状态监控</h3>
+    <h3>Geo-Go 指挥中心</h3>
+    <div id="device-info">DEVICE ID: FETCHING...</div>
     <div id="status">系统初始化中...</div>
     
-    <div style="margin-top: 10px; font-weight: bold; font-size: 13px; color: #555;">🚗 活跃车辆发现 (点击锁定)</div>
-    <div id="device-list" style="max-height: 100px; overflow-y: auto; margin-bottom: 10px;"></div>
+    <div style="margin-top: 10px; font-weight: bold; font-size: 12px; color: #00d2ff; margin-bottom: 4px;">🚗 活跃车辆列表 (点击锁定追踪)</div>
+    <div id="device-swiper"></div>
 
+    <div style="font-weight: bold; font-size: 12px; color: #ff3333;">🚨 实时区域报警存证</div>
     <div id="alarm-logs"></div>
 </div>
 
 <div id="map"></div>
 
-<script>
-    let map = null;
-    let currentDeviceID = null;
-    let pollTimer = null;
-
-    map = new maplibregl.Map({
-        container: 'map',
-        style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
-        center: [121.4737, 31.2304], 
-        zoom: 11
-    });
-
-    map.on('load', () => {
-        console.log("MapLibre 空间图层就绪...");
-        document.getElementById('status').innerText = "底图及高性能路网就绪，正在追踪数据...";
-
-        const mvtHost = window.location.protocol + '//' + window.location.host;
-
-        // 1. 🔗 空间切片叠加：业务地理围栏 (MVT)
-        map.addSource('fences-mvt-source', {
-            'type': 'vector',
-            'tiles': [ mvtHost + '/tiles/fences/{z}/{x}/{y}.mvt' ]
-        });
-        map.addLayer({
-            'id': 'fences-layer-fill', 'type': 'fill', 'source': 'fences-mvt-source', 'source-layer': 'fences',
-            'paint': { 'fill-color': '#007cbf', 'fill-opacity': 0.15 }
-        });
-        map.addLayer({
-            'id': 'fences-layer-outline', 'type': 'line', 'source': 'fences-mvt-source', 'source-layer': 'fences',
-            'paint': { 'line-color': '#007cbf', 'line-width': 2 }
-        });
-
-        // 2. 🛰️ 空间切片叠加：OSM.pbf 物理拓扑道路网 (MVT)
-        map.addSource('roads-mvt-source', {
-            'type': 'vector',
-            'tiles': [ mvtHost + '/tiles/roads/{z}/{x}/{y}.mvt' ]
-        });
-        map.addLayer({
-            'id': 'roads-layer-line', 'type': 'line', 'source': 'roads-mvt-source', 'source-layer': 'roads',
-            'layout': { 'line-join': 'round', 'line-cap': 'round' },
-            'paint': {
-                'line-color': '#2ECC71', // 荧光绿路网线条
-                'line-width': ['interpolate', ['linear'], ['zoom'], 10, 1.0, 15, 3.0, 18, 6.0],
-                'line-opacity': 0.65
-            }
-        }, 'fences-layer-outline'); 
-
-        // 3. 🎯 全量单兵精细化实时轨迹追踪层 (GeoJSON 锁死)
-        map.addSource('device-track-source', {
-            'type': 'geojson',
-            'data': { 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': [] } }
-        });
-        map.addLayer({
-            'id': 'track-layer', 'type': 'line', 'source': 'device-track-source',
-            'layout': { 'line-join': 'round', 'line-cap': 'round' },
-            'paint': { 'line-color': '#ff5500', 'line-width': 4 } // 亮橙色轨迹主线
-        });
-
-        startDiscovery();
-        initWebSocket();
-    });
-
-    async function startDiscovery() {
-        const refresh = async () => {
-            try {
-                const res = await fetch('/list');
-                const devices = await res.json();
-                const container = document.getElementById('device-list');
-                if(!container) return;
-                
-                if(!devices || devices.length === 0) {
-                    container.innerHTML = '<div style="font-size:12px; color:#999;">暂无活跃采集设备</div>';
-                    return;
-                }
-
-                container.innerHTML = devices.map(id => `
-                    <div class="device-slide ${id === currentDeviceID ? 'active' : ''}" onclick="selectDevice('${id}')">
-                        🆔 设备: ${id}
-                    </div>
-                `).join('');
-
-                if (!currentDeviceID && devices.length > 0) {
-                    selectDevice(devices[0]);
-                }
-            } catch (e) { console.error(e); }
-        };
-        refresh();
-        setInterval(refresh, 5000);
-    }
-
-    function selectDevice(id) {
-        currentDeviceID = id;
-        document.querySelectorAll('.device-slide').forEach(el => {
-            el.classList.toggle('active', el.innerText.includes(id));
-        });
-
-        if (pollTimer) clearInterval(pollTimer);
-        const fetchTrack = async () => {
-            try {
-                const res = await fetch(`/history?id=${encodeURIComponent(id)}`);
-                const data = await res.json();
-                
-                if (data && data.coordinates && data.coordinates.length > 0) {
-                    const coords = data.coordinates;
-                    const source = map.getSource('device-track-source');
-                    if (source) {
-                        source.setData({
-                            'type': 'Feature',
-                            'geometry': { 'type': 'LineString', 'coordinates': coords }
-                        });
-                    }
-                    map.easeTo({ center: coords[coords.length - 1], duration: 500 });
-                }
-            } catch (e) { console.error("轨迹通道同步异常:", e); }
-        };
-        
-        fetchTrack();
-        pollTimer = setInterval(fetchTrack, 3000); // 3秒死锁轮询
-    }
-
-    function initWebSocket() {
-        const wsProtocol = window.location.protocol === "https:" ? "wss://" : "ws://";
-        const wsUrl = wsProtocol + window.location.host + "/ws";
-        const ws = new WebSocket(wsUrl);
-
-        ws.onopen = () => {
-            document.getElementById('status').innerText = "系统运行正常 (🟢 实时链路通畅)";
-        };
-
-        ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                if (data.type === 'alarm') {
-                    const logContainer = document.getElementById('alarm-logs');
-                    const item = document.createElement('div');
-                    item.className = 'log-item';
-                    item.innerHTML = `<strong>🚨 违规闯区</strong><br>对象: ${data.driver}<br>围栏: ${data.fence}`;
-                    logContainer.insertBefore(item, logContainer.firstChild);
-                }
-            } catch (e) { console.log(event.data); }
-        };
-
-        ws.onclose = () => {
-            document.getElementById('status').innerText = "链路意外中断 (🔴 自动重连中...)";
-            setTimeout(initWebSocket, 5000);
-        };
-    }
-</script>
+<script src="/app.js"></script>
 </body>
 </html>
