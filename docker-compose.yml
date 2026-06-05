@@ -32,8 +32,9 @@ services:
     restart: always
     ports:
       - "8002:8002"
-    # 🎯 【全新注入核心】指定启动命令，让它带着配置文件常驻前台
-    command: ["valhalla_service", "/valhalla.json", "1"]
+    # 🎯 1. 启动命令同样指向你在 JSON 里配好的路径规范
+    entrypoint: ["valhalla_service", "/etc/valhalla/valhalla.json", "1"]
     volumes:
-      - /root/valhalla-server/valhalla.json:/valhalla.json:ro
+      - /root/valhalla-server/valhalla.json:/etc/valhalla/valhalla.json:ro
+      # 🎯 2. 【核心对齐】将冒号右边改成 /custom_tiles，与你的 JSON 完美闭环！
       - /root/valhalla-server/custom_tiles:/custom_tiles
