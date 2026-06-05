@@ -1,19 +1,40 @@
 version: '3.8'
+
 services:
   app:
     build: .
+    container_name: geo-go-app-1
     ports:
       - "443:443"
       - "8080:8080"
-    # 移除 volumes 挂载以避免覆盖容器内的证书，或者确保宿主机根目录有证书
     environment:
       - DB_URL=postgres://docker:floder123@172.17.0.1:5432/gis_db?sslmode=disable
       - REDIS_URL=redis:6379
     restart: always
+    # 🎯 3. 确保你的 Go 程序启动前，Redis 和 Valhalla 已经就绪
     depends_on:
       - redis
+      - valhalla-service
+    volumes:
+      # 🎯 4. 【核心对齐】把宿主机 /ssl 目录下的真证书，挂载进容器的绝对路径中！
+      # 之前你的 Go 报错提示找不到证书，多加这一行物理挂载就彻底根治了
+      - /ssl:/ssl:ro
 
   redis:
     image: redis:7-alpine
     container_name: geo-go-redis-1
     restart: always
+
+  # 🎯 【全新注入】把你在 ~/valhalla-server 里的上海 OSM 资产彻底拉起来
+  valhalla-service:
+    image: ghcr.io/valhalla/valhalla:latest
+    container_name: valhalla-service
+    restart: always
+    ports:
+      - "8002:8002"
+    volumes:
+      # 1. 🎯 挂载宿主机根目录下的 valhalla.json 配置文件
+      - /root/valhalla-server/valhalla.json:/valhalla.json:ro
+      # 2. 🎯 挂载你刚才ls看到的 custom_tiles 上海路网矢量切片目录
+      # 冒号后面严格对齐容器内部去读取的 /custom_tiles 物理目录
+      - /root/valhalla-server/custom_tiles:/custom_tiles
