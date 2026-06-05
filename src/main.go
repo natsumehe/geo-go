@@ -40,8 +40,8 @@ type LocationReport struct {
 	DeviceID string  `json:"id"`
 	Lat      float64 `json:"lat"`
 	Lng      float64 `json:"lng"`
-	Provider string  `json:"provider"` // 新增
-	Accuracy float64 `json:"accuracy"` // 新增
+	Provider string  `json:"provider"`
+	Accuracy float64 `json:"accuracy"`
 }
 
 type DeviceFilters struct {
@@ -50,29 +50,25 @@ type DeviceFilters struct {
 }
 
 var (
-	// 内存存储：Key 是 DeviceID, Value 是 *DeviceFilters
-	// 这种设计避免了频繁读写数据库，保证了算法响应的毫秒级
 	kfStore = sync.Map{}
 )
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
-var clients = make(map[*websocket.Conn]bool) // 存储所有在线的管理端连接
+var clients = make(map[*websocket.Conn]bool)
 
 func WsHandler(w http.ResponseWriter, r *http.Request) {
 	conn, _ := upgrader.Upgrade(w, r, nil)
-	clients[conn] = true // 记录连接
+	clients[conn] = true
 }
 
-// 在 checkFence 发现违规时调用
 func notifyClients(msg string) {
 	for client := range clients {
 		_ = client.WriteMessage(websocket.TextMessage, []byte(msg))
 	}
 }
 
-// HaversineDistance 计算两点间的距离（单位：米）
 func HaversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
-	const R = 6371000 // 地球半径
+	const R = 6371000
 	phi1 := lat1 * 3.14159 / 180
 	phi2 := lat2 * 3.14159 / 180
 	deltaPhi := (lat2 - lat1) * 3.14159 / 180
@@ -84,10 +80,8 @@ func HaversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
 	return R * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 }
 
-// checkFence 负责检测并自动存档违规记录
 func checkFence(driverID string, lng, lat float64) {
 	var fenceName string
-	// 空间碰撞检测：判定点是否在多边形内
 	fenceQuery := `
                 SELECT name FROM fences 
                 WHERE ST_Contains(area, ST_SetSRID(ST_MakePoint($1, $2), 4326)) 
@@ -110,11 +104,7 @@ func checkFence(driverID string, lng, lat float64) {
 	}
 }
 
-// UpdateHandle 处理手机端 GPS 上报
-// UpdateHandle 处理手机端 GPS 上报 (已整合 sync.Map 过滤)
-// UpdateHandle 处理手机端 GPS 上报 (全量留存 + 业务过滤双轨制)
 func UpdateHandle(w http.ResponseWriter, r *http.Request) {
-	// --- 1. 跨域与基础校验 --- (保持不变)
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
@@ -123,7 +113,6 @@ func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- 2. 参数提取 ---
 	id := r.URL.Query().Get("id")
 	latStr := r.URL.Query().Get("lat")
 	lngStr := r.URL.Query().Get("lng")
@@ -140,7 +129,7 @@ func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 	accuracy, _ := strconv.ParseFloat(accStr, 64)
 	if accuracy <= 0 {
 		accuracy = 20.0
-	} // 默认精度
+	}
 
 	if id == "" || lngStr == "" || latStr == "" {
 		http.Error(w, "Missing Parameters", http.StatusBadRequest)
@@ -150,68 +139,54 @@ func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 	lng, _ := strconv.ParseFloat(lngStr, 64)
 	lat, _ := strconv.ParseFloat(latStr, 64)
 
-	// --- 3. 【核心增强】卡尔曼平滑计算 ---
-	// 获取或创建滤波器
 	valKF, _ := kfStore.LoadOrStore(id, &DeviceFilters{
 		LatKF: &filters.KalmanFilter{LastValue: lat, P: 1.0, Q: 0.000001, R: 0.0001},
 		LngKF: &filters.KalmanFilter{LastValue: lng, P: 1.0, Q: 0.000001, R: 0.0001},
 	})
 	kf := valKF.(*DeviceFilters)
 
-	// 得到平滑后的坐标
 	smoothLat := kf.LatKF.SmartUpdate(lat, accuracy)
 	smoothLng := kf.LngKF.SmartUpdate(lng, accuracy)
 
-	// --- 4. Redis 实时位置更新 (显示平滑后的点，视觉更顺滑) ---
 	if rdb != nil {
 		rdb.GeoAdd(ctx, "drivers:live", &redis.GeoLocation{
 			Name: id, Longitude: smoothLng, Latitude: smoothLat,
 		})
 	}
 
-	// --- 5. 业务逻辑过滤判定 ---
-	// 使用平滑后的坐标进行距离计算，过滤效果更准确
 	shouldWriteBusinessHistory := true
 	valCache, ok := posCache.Load(id)
 	if ok {
 		last := valCache.(LastPos)
 		dist := HaversineDistance(last.Lat, last.Lng, smoothLat, smoothLng)
-		// 过滤：平滑后移动不足 3 米 且 时间不足 10s 则不记入历史
 		if dist < 3.0 && time.Since(last.Timestamp) < 10*time.Second {
 			shouldWriteBusinessHistory = false
 		}
 	}
 
-	// --- 6. 异步双轨持久化 ---
 	go func(dID string, rawLo, rawLa, smLo, smLa float64, prov string, acc float64, isMoving bool) {
 		if db != nil {
-			// A. 【原始表】存下最真实的、带噪声的数据（审计用）
 			rawSQL := `INSERT INTO driver_raw_data (name, location, provider, accuracy, created_at)
                        VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), $4, $5, NOW())`
 			_, _ = db.Exec(rawSQL, dID, rawLo, rawLa, prov, acc)
 
-			// B. 【设备状态】存下当前最新的平滑位置
 			upsertSQL := `INSERT INTO devices (device_id, last_lat, last_lng, last_seen, last_provider)
                           VALUES ($1, $2, $3, NOW(), $4)
                           ON CONFLICT (device_id) DO UPDATE SET last_lat=$2, last_lng=$3, last_seen=NOW();`
 			_, _ = db.Exec(upsertSQL, dID, smLa, smLo, prov)
 
-			// C. 【业务历史】仅存储平滑后的轨迹点
 			if isMoving {
 				historySQL := `INSERT INTO driver_history (name, location, provider, accuracy, created_at) 
                                VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), $4, $5, NOW())`
 				_, _ = db.Exec(historySQL, dID, smLo, smLa, prov, acc)
 
-				// 更新缓存
 				posCache.Store(dID, LastPos{Lat: smLa, Lng: smLo, Timestamp: time.Now()})
 
-				// 触发围栏检测（使用平滑坐标减少误报）
 				checkFence(dID, smLo, smLa)
 			}
 		}
 	}(id, lng, lat, smoothLng, smoothLat, provider, accuracy, shouldWriteBusinessHistory)
 
-	// --- 7. 响应客户端 ---
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "OK: %s Location Filtered & Synced", id)
 }
@@ -264,10 +239,8 @@ func AlarmsHandle(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "[%s]", strings.Join(results, ","))
 }
 
-// 后端 ListHandle 建议
 func ListHandle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	// 从历史记录里提取所有不重复的设备名
 	rows, err := db.Query("SELECT DISTINCT name FROM driver_history")
 	if err != nil {
 		http.Error(w, err.Error(), 500)
@@ -283,13 +256,12 @@ func ListHandle(w http.ResponseWriter, r *http.Request) {
 			ids = append(ids, id)
 		}
 	}
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ids)
 }
 
-// UpdateLocationHandler 处理来自手机的 /update 请求
 func UpdateLocationHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// 1. 解析参数
 		id := r.URL.Query().Get("id")
 		latStr := r.URL.Query().Get("lat")
 		lngStr := r.URL.Query().Get("lng")
@@ -299,8 +271,6 @@ func UpdateLocationHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// 2. 执行 UPSERT (更新最新位置)
-		// 这一步保证了 /list 接口永远能秒回最新的设备状态
 		upsertSQL := `
             INSERT INTO devices (device_id, last_lat, last_lng, last_seen)
             VALUES ($1, $2, $3, NOW())
@@ -312,7 +282,6 @@ func UpdateLocationHandler(db *sql.DB) http.HandlerFunc {
 			fmt.Printf("❌ 更新设备状态失败: %v\n", err)
 		}
 
-		// 3. 写入历史轨迹 (用于 index.html 绘线)
 		historySQL := `
             INSERT INTO driver_history (name, location, created_at)
             VALUES ($1, ST_SetSRID(ST_Point($3, $2), 4326), NOW());`
@@ -325,7 +294,6 @@ func UpdateLocationHandler(db *sql.DB) http.HandlerFunc {
 
 func ListDevicesHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// 只查询最近 5 分钟内活跃的设备
 		rows, err := db.Query("SELECT device_id FROM devices WHERE last_seen > NOW() - INTERVAL '5 minutes'")
 		if err != nil {
 			http.Error(w, err.Error(), 500)
@@ -349,7 +317,6 @@ func FencesHandle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
 
-	// 使用 ST_AsGeoJSON 将空间对象转为前端可读的 JSON
 	query := `SELECT id, name, ST_AsGeoJSON(area) FROM fences`
 	rows, err := db.Query(query)
 	if err != nil {
@@ -364,7 +331,6 @@ func FencesHandle(w http.ResponseWriter, r *http.Request) {
 		var name, geomJSON string
 		rows.Scan(&id, &name, &geomJSON)
 
-		// 拼装成标准的 GeoJSON Feature 格式
 		feature := fmt.Sprintf(`{
             "type": "Feature",
             "properties": {"id": %d, "name": "%s"},
@@ -377,7 +343,6 @@ func FencesHandle(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	// 1. 环境变量读取（保持你原有的逻辑不变）
 	connStr := os.Getenv("DB_URL")
 	if connStr == "" {
 		connStr = "postgres://docker:floder123@172.17.0.1:5432/gis_db?sslmode=disable"
@@ -390,7 +355,6 @@ func main() {
 	fmt.Printf("[DEBUG] 尝试连接数据库地址: %s\n", connStr)
 	fmt.Printf("[DEBUG] 尝试连接 Redis 地址: %s\n", redisAddr)
 
-	// 2. 初始化连接与重试逻辑
 	rdb = redis.NewClient(&redis.Options{Addr: redisAddr})
 
 	var err error
@@ -409,30 +373,39 @@ func main() {
 		time.Sleep(2 * time.Second)
 	}
 
-	// 3. 基础业务路由注册
 	http.HandleFunc("/update", UpdateHandle)
 	http.HandleFunc("/history", HistoryHandle)
 	http.HandleFunc("/alarms", AlarmsHandle)
 	http.HandleFunc("/list", ListHandle)
 	http.HandleFunc("/fences", FencesHandle)
 
-	// 4. 🎯 【精准合并优化】完美支持 MVT 矢量路网的高性能反向代理通道
+	// 4. 🎯 【精准合并优化】拦截 RESTful 风格的瓦片请求，并动态洗成 Valhalla 原生的 Query 参数
 	http.HandleFunc("/valhalla/", func(w http.ResponseWriter, r *http.Request) {
-		// 显式允许前端跨域（包含 MVT 二进制流和复杂 JSON 请求）
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 
-		// 拦截并秒回浏览器的 CORS 预检请求，防止 MVT 瓦片被跨域拦截
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 
-		// 替换请求路径，精准无损送往内网的 Valhalla 容器
 		targetPath := strings.TrimPrefix(r.URL.Path, "/valhalla")
+
+		// 🚀 【关键重写】把 /tile/13/6858/3348.mvt 动态改写为 Loki 引擎识别的 /tile?z=13&x=6858&y=3348
+		if strings.HasPrefix(targetPath, "/tile/") {
+			cleanPath := strings.TrimSuffix(targetPath, ".mvt")
+			parts := strings.Split(cleanPath, "/")
+			if len(parts) >= 5 {
+				z := parts[2]
+				x := parts[3]
+				y := parts[4]
+				targetPath = fmt.Sprintf("/tile?z=%s&x=%s&y=%s", z, x, y)
+			}
+		}
+
 		targetURL := fmt.Sprintf("%s%s", valhallaURL, targetPath)
-		if r.URL.RawQuery != "" {
+		if r.URL.RawQuery != "" && !strings.Contains(targetPath, "?") {
 			targetURL = fmt.Sprintf("%s?%s", targetURL, r.URL.RawQuery)
 		}
 
@@ -446,7 +419,6 @@ func main() {
 		}
 		defer resp.Body.Close()
 
-		// 核心：无损透传所有 Header（包含关键的 Content-Type: application/x-protobuf）
 		for k, vv := range resp.Header {
 			for _, v := range vv {
 				w.Header().Add(k, v)
@@ -454,18 +426,16 @@ func main() {
 		}
 		w.WriteHeader(resp.StatusCode)
 
-		// 流式内存零拷贝转发二进制矢量数据
+		// 流式无损转发二进制 MVT 矢量流
 		io.Copy(w, resp.Body)
 	})
 
-	// 5. 自动适配容器与本地路径
 	staticDir := "/app/static"
 	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
 		staticDir = "./static"
 	}
 	http.Handle("/", http.FileServer(http.Dir(staticDir)))
 
-	// 6. 启动双协议服务 (对齐你的绝对路径)
 	go func() {
 		fmt.Println("🔓 HTTP 备用服务启动: 8080")
 		_ = http.ListenAndServe(":8080", nil)
