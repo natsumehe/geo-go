@@ -38,13 +38,16 @@ const App = {
         this.loadFences();
         console.log("Radar System Initialized.");
     },
-    initMap() {
-        // 1. 初始化底图，将层级稍微拉近一点，定位在上海人民广场核心区
+   initMap() {
+        // 1. 🎯 【重设准星】精准定位到上海人民广场核心区 [31.2304, 121.4737]
+        // 并且强制限定缩放层级在 14-16 层（大屏路网最饱满的层级）
         this.map = L.map('map', { 
             attributionControl: false, 
             zoomControl: false,
-            preferCanvas: true 
-        }).setView([31.2304, 121.4737], 12); // 🎯 先用 12 层或 11 层看能不能撞出你下载的数据边界
+            preferCanvas: true,
+            minZoom: 12,
+            maxZoom: 16
+        }).setView([31.2304, 121.4737], 14); 
 
         const ValhallaOsmLayer = L.TileLayer.extend({
             createTile: function(coords, done) {
@@ -56,7 +59,7 @@ const App = {
 
                 fetch(requestUrl)
                     .then(res => {
-                        // 🎯 核心修正：如果是 404，说明这块地方没有 OSM 路网（比如绿地、海面），优雅当作空瓦片放行
+                        // 🎯 优雅放行：如果是 404（边缘无路网区），优雅当作空瓦片放行，绝不爆红
                         if (!res.ok) {
                             done(null, tile);
                             return null;
@@ -66,8 +69,9 @@ const App = {
                     .then(buffer => {
                         if (!buffer) return;
                         
-                        // TODO: 如果需要用 Canvas 手动解码 MVT 绘图，在这里编写 ctx 逻辑
-                        // 如果只是把物理数据通路调通，此时 200 OK 的数据已经无损躺在 buffer 里了
+                        // 🎯 200 OK 的上海核心路网二进制流已经成功躺在这里
+                        console.log(`%c 🎯 成功捕获上海核心路网切片: ${coords.z}/${coords.x}/${tmsY}`, "color: #00f2ff");
+                        
                         done(null, tile);
                     })
                     .catch(() => {
