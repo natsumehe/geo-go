@@ -99,25 +99,40 @@ const App = {
         this.map.on('load', () => {
             console.log("Valhalla WebGL 动态矢量路网底座无损绑定成功");
             
-            // 初始化轨迹动态数据源
-            this.map.addSource('device-track', {
-                type: 'geojson',
-                data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } }
-            });
-            this.map.addLayer({
-                id: 'track-line', type: 'line', source: 'device-track',
-                paint: { 'line-color': '#00f2ff', 'line-width': 4, 'line-opacity': 0.8 }
-            });
+            // 添加地理围栏动态矢量图层
+map.addSource('fences-source', {
+    'type': 'vector',
+    // 🎯 直接请求 Go 后端新写的高性能动态切片接口
+    'tiles': [
+        'https://' + window.location.host + '/tiles/fences/{z}/{x}/{y}.mvt'
+    ],
+    'minzoom': 0,
+    'maxzoom': 22
+});
 
-            this.map.addSource('device-pointer', {
-                type: 'geojson',
-                data: { type: 'Feature', geometry: { type: 'Point', coordinates: [0,0] } }
-            });
-            this.map.addLayer({
-                id: 'track-point', type: 'circle', source: 'device-pointer',
-                paint: { 'circle-radius': 6, 'circle-color': '#00f2ff', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 }
-            });
+// 为围栏上色渲染
+map.addLayer({
+    'id': 'fences-layer',
+    'type': 'fill',
+    'source': 'fences-source',
+    'source-layer': 'fences', // 对应 Go 代码里 ST_AsMVT 的图层名字
+    'paint': {
+        'fill-color': '#ff3333',
+        'fill-opacity': 0.25
+    }
+});
 
+// 给围栏加个明显的红边框
+map.addLayer({
+    'id': 'fences-outline',
+    'type': 'line',
+    'source': 'fences-source',
+    'source-layer': 'fences',
+    'paint': {
+        'line-color': '#ff3333',
+        'line-width': 2
+    }
+});
             this.loadFences();
         });
     },

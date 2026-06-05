@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"geo-go/filters"
-	"io"
 	"log"
 	"math"
 	"net/http"
@@ -328,81 +327,74 @@ func main() {
 	http.HandleFunc("/fences", FencesHandle)
 	http.HandleFunc("/ws", WsHandler)
 
-	// 4. 🎯 【编译修复】拦截 RESTful 瓦片请求，转换为符合 Valhalla 地理网格系统的内部坐标
-	http.HandleFunc("/valhalla/", func(w http.ResponseWriter, r *http.Request) {
+	// 4. 🎯 【PostGIS 动态矢量瓦片引擎】彻底替代废弃的 Valhalla 换算拦截器
+	// 前端 MapLibre 注册 Source 时，直接请求: https://<your-ip>/tiles/fences/{z}/{x}/{y}.mvt
+	http.HandleFunc("/tiles/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Content-Type", "application/vnd.mapbox-vector-tile")
 
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 
-		targetPath := strings.TrimPrefix(r.URL.Path, "/valhalla")
-
-		// 🚀 拦截标准 Web Mercator 瓦片请求
-		if strings.HasPrefix(targetPath, "/tile/") {
-			cleanPath := strings.TrimSuffix(targetPath, ".mvt")
-			parts := strings.Split(cleanPath, "/")
-			if len(parts) >= 5 {
-				zElem, _ := strconv.Atoi(parts[2])
-				xElem, _ := strconv.Atoi(parts[3])
-				yElem, _ := strconv.Atoi(parts[4])
-
-				// 1. 先通过通用逆墨卡托公式算出大致的经纬度
-				n := math.Pi - 2.0*math.Pi*float64(yElem)/math.Pow(2.0, float64(zElem))
-				lat := 180.0 / math.Pi * math.Atan(0.5*(math.Exp(n)-math.Exp(-n)))
-				lng := float64(xElem)/math.Pow(2.0, float64(zElem))*360.0 - 180.0
-
-				// 2. 🎯 基于你 custom_tiles 磁盘真实目录（702/485系列）的物理边界校准公式
-				// 经推算，Valhalla 的 2 级瓦片全球共有 1440x720 个网格（每格 0.25 度）
-				// 它的经度划分原点在 -180，纬度原点在 -90。
-				// 标准公式为：vX = floor((lng + 180) / 0.25)，vY = floor((lat + 90) / 0.25)
-				// 但由于 Valhalla 底层对 2 级瓦片使用了特殊的打包组合（每组可能包含了特定的 Offset 导致目录被归纳为 000/702/xxx）
-
-				// 依据你发出来的真实日志与目录对照：
-				// 前端请求 x=6862 (MapLibre 13级) -> 换算出来应该是 x=1205 附近的网格，但对应你磁盘上的 702 文件夹
-				// 我们直接采用局部线性锚定校准，让它死死咬合住你磁盘上的文件：
-				baseVX := int(math.Floor((lng + 180.0) / 0.25))
-				baseVY := int(math.Floor((lat + 90.0) / 0.25))
-
-				// 针对上海地区物理切片的绝对修正：
-				vX := baseVX - 503
-				vY := baseVY // Y轴 485 刚好天然契合你磁盘上的 485.gph
-
-				// 防止数值越界越出你的 custom_tiles 范围
-				if vX < 695 || vX > 718 {
-					vX = 702 // 默认兜底到上海核心城区文件夹
-				}
-
-				// 3. 重构为符合你后端 Valhalla Loki 引擎能够吃掉的物理 Query
-				targetPath = fmt.Sprintf("/tile?z=2&x=%d&y=%d", vX, vY)
-			}
-		}
-
-		targetURL := fmt.Sprintf("%s%s", valhallaURL, targetPath)
-		if r.URL.RawQuery != "" && !strings.Contains(targetPath, "?") {
-			targetURL = fmt.Sprintf("%s?%s", targetURL, r.URL.RawQuery)
-		}
-
-		proxyReq, _ := http.NewRequest(r.Method, targetURL, r.Body)
-		proxyReq.Header = r.Header
-
-		resp, err := http.DefaultClient.Do(proxyReq)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Valhalla 通信故障: %v", err), http.StatusBadGateway)
+		// 解析 URL 路径，格式类似: /tiles/{layer}/{z}/{x}/{y}.mvt
+		path := strings.TrimPrefix(r.URL.Path, "/tiles/")
+		path = strings.TrimSuffix(path, ".mvt")
+		parts := strings.Split(path, "/")
+		if len(parts) < 4 {
+			http.Error(w, "Bad Request: Invalid tile format", http.StatusBadRequest)
 			return
 		}
-		defer resp.Body.Close()
 
-		for k, vv := range resp.Header {
-			for _, v := range vv {
-				w.Header().Add(k, v)
-			}
+		layerName := parts[0] // 支持扩展多图层，比如 fences(围栏), history(历史轨迹)
+		z, _ := strconv.Atoi(parts[1])
+		x, _ := strconv.Atoi(parts[2])
+		y, _ := strconv.Atoi(parts[3])
+
+		// 🎯 核心逻辑：利用 PostGIS 内置的 ST_TileEnvelope 和 ST_AsMVT 极其高效地在数据库端完成切片
+		// 3857 是 Web Mercator 投影系统，完全契合 MapLibre 的标准
+		var mvtQuery string
+		switch layerName {
+		case "fences":
+			mvtQuery = `
+				WITH tilegeom AS (
+					SELECT id, name, ST_AsMVTGeom(ST_Transform(area, 3857), ST_TileEnvelope($1, $2, $3), 4096, 64, true) AS geom
+					FROM fences
+					WHERE ST_Intersects(ST_Transform(area, 3857), ST_TileEnvelope($1, $2, $3))
+				)
+				SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
+		case "history":
+			// 允许前端直接高亮渲染所有司机的实时/历史轨迹图层
+			mvtQuery = `
+				WITH tilegeom AS (
+					SELECT name, ST_AsMVTGeom(ST_Transform(location, 3857), ST_TileEnvelope($1, $2, $3), 4096, 64, true) AS geom
+					FROM driver_history
+					WHERE ST_Intersects(ST_Transform(location, 3857), ST_TileEnvelope($1, $2, $3))
+				)
+				SELECT ST_AsMVT(tilegeom.*, 'history') FROM tilegeom;`
+		default:
+			http.Error(w, "Layer not found", http.StatusNotFound)
+			return
 		}
-		w.WriteHeader(resp.StatusCode)
-		io.Copy(w, resp.Body)
+
+		var tileData []byte
+		err := db.QueryRow(mvtQuery, z, x, y).Scan(&tileData)
+		if err != nil {
+			log.Printf(" [❌ 切片失败] Layer: %s, %v", layerName, err)
+			w.WriteHeader(http.StatusNoContent) // 没数据时返回 204
+			return
+		}
+
+		if len(tileData) == 0 {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(tileData)
 	})
 
 	staticDir := "/app/static"
