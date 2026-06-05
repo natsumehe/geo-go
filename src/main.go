@@ -380,7 +380,7 @@ func main() {
 	http.HandleFunc("/fences", FencesHandle)
 
 	// 4. 🎯 【精准合并优化】拦截 RESTful 风格的瓦片请求，并动态洗成 Valhalla 原生的 Query 参数
-	http.HandleFunc("/valhalla/", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/valhalla/", func(w http.ResponseWriter, r *http.Type) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -392,15 +392,33 @@ func main() {
 
 		targetPath := strings.TrimPrefix(r.URL.Path, "/valhalla")
 
-		// 🚀 【关键重写】把 /tile/13/6858/3348.mvt 动态改写为 Loki 引擎识别的 /tile?z=13&x=6858&y=3348
+		// 🚀 拦截标准 Web Mercator 瓦片请求，进行坐标系动态换算
 		if strings.HasPrefix(targetPath, "/tile/") {
 			cleanPath := strings.TrimSuffix(targetPath, ".mvt")
 			parts := strings.Split(cleanPath, "/")
 			if len(parts) >= 5 {
-				z := parts[2]
-				x := parts[3]
-				y := parts[4]
-				targetPath = fmt.Sprintf("/tile?z=%s&x=%s&y=%s", z, x, y)
+				// 解析前端的标准墨卡托瓦片坐标
+				zElem, _ := strconv.Atoi(parts[2])
+				xElem, _ := strconv.Atoi(parts[3])
+				yElem, _ := strconv.Atoi(parts[4])
+
+				// 1. 将标准墨卡托瓦片 (z/x/y) 逆运算转换为该瓦片中心点的经纬度
+				// 计算公式：经度 = x / 2^z * 360 - 180
+				n := math.Pi - 2.0*math.Pi*float64(yElem)/math.Pow(2.0, float64(zElem))
+				lat := 180.0 / math.Pi * math.Atan(0.5*(math.Exp(n)-math.Exp(-n)))
+				lng := float64(xElem)/math.Pow(2.0, float64(zElem))*360.0 - 180.0
+
+				// 2. 将经纬度换算为 Valhalla 独有的地理网格网格坐标
+				// Valhalla 内部默认 2 级 (城市街区级别) 的网格大小为 0.25 度
+				// 如果你 build_tiles 时没改过默认配置，层级固定为 2
+				valhallaLevel := 2
+
+				// 计算 Valhalla 体系下的 x 和 y 行列号
+				vX := int(math.Floor((lng + 180.0) / 0.25))
+				vY := int(math.Floor((lat + 90.0) / 0.25))
+
+				// 3. 完美重构为符合 Valhalla Loki 引擎预期的内部坐标
+				targetPath = fmt.Sprintf("/tile?z=%d&x=%d&y=%d", valhallaLevel, vX, vY)
 			}
 		}
 
@@ -425,8 +443,6 @@ func main() {
 			}
 		}
 		w.WriteHeader(resp.StatusCode)
-
-		// 流式无损转发二进制 MVT 矢量流
 		io.Copy(w, resp.Body)
 	})
 
