@@ -1,102 +1,148 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <title>Geo-Go 实时中心</title>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <link href="https://unpkg.com/maplibre-gl@3.x/dist/maplibre-gl.css" rel="stylesheet" />
-    <script src="https://unpkg.com/maplibre-gl@3.x/dist/maplibre-gl.js"></script>
-    
+    <meta charset="UTF-8">
+    <title>高精度车辆监控与地理围栏系统</title>
+    <link href="https://unpkg.com/maplibre-gl@4.1.2/dist/maplibre-gl.css" rel="stylesheet" />
+    <script src="https://unpkg.com/maplibre-gl@4.1.2/dist/maplibre-gl.js"></script>
     <style>
-        :root { --neon: #00f2ff; --panel-bg: rgba(15, 15, 15, 0.9); }
-        
-        /* 强制全屏撑开 */
-        html, body { 
-            margin: 0; padding: 0; width: 100%; height: 100%; 
-            background: #000; overflow: hidden; font-family: -apple-system, sans-serif; 
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: sans-serif; }
+        #map { width: 100%; height: 100%; position: absolute; top: 0; bottom: 0; }
+        #panel {
+            position: absolute; top: 20px; left: 20px; z-index: 10;
+            background: rgba(255, 255, 255, 0.95); padding: 15px;
+            border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            max-width: 320px;
         }
-        
-        /* 地图层级置底 */
-        #map { 
-            position: absolute; top: 0; left: 0;
-            height: 100%; width: 100%; 
-            z-index: 1; background: #0a0a0a; 
-        }
-
-        /* UI层级置顶 */
-        #top-bar {
-            position: absolute; top: 15px; right: 15px; 
-            z-index: 2000; display: flex; gap: 10px;
-        }
-        .nav-btn {
-            background: rgba(0, 0, 0, 0.8); color: var(--neon);
-            border: 1px solid var(--neon); padding: 10px 16px;
-            border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 13px;
-            pointer-events: auto; /* 确保可点击 */
-        }
-
-        #device-swiper-container {
-            position: absolute; bottom: 30px; left: 0; width: 100vw;
-            z-index: 2000; overflow: hidden;
-            pointer-events: none; /* 穿透到下方滚动 */
-        }
-        #device-swiper {
-            display: flex; gap: 15px; 
-            padding: 0 calc(50vw - 120px); 
-            overflow-x: auto; scroll-snap-type: x mandatory;
-            -webkit-overflow-scrolling: touch;
-            scrollbar-width: none;
-            pointer-events: auto; /* 恢复自身点击 */
-        }
-        #device-swiper::-webkit-scrollbar { display: none; }
-
-        .swiper-slide {
-            flex: 0 0 240px; width: 240px; height: 110px;
-            background: var(--panel-bg); color: white;
-            border-radius: 16px; border: 1px solid #333;
-            padding: 15px; scroll-snap-align: center;
-            transition: all 0.3s ease;
-            display: flex; flex-direction: column; justify-content: space-between;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-            box-sizing: border-box;
-        }
-
-        .swiper-slide.active { border-color: var(--neon); box-shadow: 0 0 20px rgba(0, 242, 255, 0.3); }
-        .slide-id { font-size: 18px; font-weight: bold; }
-        .slide-tag { font-size: 10px; color: var(--neon); }
-        .leaflet-control-attribution { display: none !important; }
+        h3 { margin-top: 0; color: #333; border-bottom: 2px solid #007cbf; padding-bottom: 5px; }
+        .log-item { font-size: 12px; margin-bottom: 6px; padding: 6px; background: #f5f5f5; border-left: 3px solid #ff3333; border-radius: 2px; }
+        #alarm-logs { max-height: 200px; overflow-y: auto; margin-top: 10px; }
     </style>
 </head>
 <body>
-    <div id="map"></div>
-    
-    <div style="display:none">
-        <div id="device-info"></div>
-        <div id="device-id"></div>
-        <div id="status"></div>
-    </div>
 
-    <div id="top-bar">
-        <button class="nav-btn" onclick="location.href='mobile.html'">📱 采集端</button>
-        <button class="nav-btn" onclick="toggleFullScreen()">🖥️ 全屏</button>
-    </div>
+<div id="panel">
+    <h3>实时状态监控</h3>
+    <div id="status">系统初始化中...</div>
+    <div id="alarm-logs"></div>
+</div>
 
-    <div id="device-swiper-container">
-        <div id="device-swiper">
-            <div class="swiper-slide" style="justify-content:center; align-items:center; color:#444;">
-                SCANNING...
-            </div>
-        </div>
-    </div>
+<div id="map"></div>
 
-    <script src="js/app.js"></script>
-    <script>
-        function toggleFullScreen() {
-            if (!document.fullscreenElement) document.documentElement.requestFullscreen();
-            else document.exitFullscreen();
-        }
-    </script>
+<script>
+    // 1. 🎯 严格定义全局变量，防止作用域被意外覆盖
+    let map = null;
+
+    // 2. 初始化地图底图
+    map = new maplibreGl.Map({
+        container: 'map',
+        // 使用公开的基础底图样式（你可以替换为你本地的样式 JSON）
+        style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
+        center: [121.4737, 31.2304], // 定位在上海核心区
+        zoom: 11
+    });
+
+    // 3. 🎯 核心生命周期：必须保证所有图层和数据源操作都在 'load' 事件回调函数内部执行！
+    map.on('load', () => {
+        console.log("MapLibre 样式加载完毕，开始安全注入 PostGIS 动态 MVT 图层...");
+        document.getElementById('status').innerText = "地图加载完毕，正在连接网格数据...";
+
+        const mvtHost = window.location.protocol + '//' + window.location.host;
+
+        // 🔗 注入地理围栏空间矢量瓦片源
+        map.addSource('fences-mvt-source', {
+            'type': 'vector',
+            'tiles': [
+                mvtHost + '/tiles/fences/{z}/{x}/{y}.mvt'
+            ],
+            'minzoom': 0,
+            'maxzoom': 22
+        });
+
+        // 🎨 渲染围栏多边形颜色
+        map.addLayer({
+            'id': 'fences-layer-fill',
+            'type': 'fill',
+            'source': 'fences-mvt-source',
+            'source-layer': 'fences', // 对应 Go 里面的明文图层标识
+            'paint': {
+                'fill-color': '#007cbf',
+                'fill-opacity': 0.15
+            }
+        });
+
+        // 🎨 渲染围栏高亮物理边框
+        map.addLayer({
+            'id': 'fences-layer-outline',
+            'type': 'line',
+            'source': 'fences-mvt-source',
+            'source-layer': 'fences',
+            'paint': {
+                'line-color': '#007cbf',
+                'line-width': 2
+            }
+        });
+
+        // 🔗 注入车辆历史轨迹动态矢量瓦片源
+        map.addSource('history-mvt-source', {
+            'type': 'vector',
+            'tiles': [
+                mvtHost + '/tiles/history/{z}/{x}/{y}.mvt'
+            ],
+            'minzoom': 0,
+            'maxzoom': 22
+        });
+
+        // 🎨 渲染轨迹热力线段
+        map.addLayer({
+            'id': 'history-layer-line',
+            'type': 'line',
+            'source': 'history-mvt-source',
+            'source-layer': 'history',
+            'layout': {
+                'line-join': 'round',
+                'line-cap': 'round'
+            },
+            'paint': {
+                'line-color': '#ff5500',
+                'line-width': 3,
+                'line-opacity': 0.8
+            }
+        });
+
+        // 4. 建立 WebSocket 实时报警链路
+        initWebSocket();
+    });
+
+    function initWebSocket() {
+        const wsProtocol = window.location.protocol === "https:" ? "wss://" : "ws://";
+        const wsUrl = wsProtocol + window.location.host + "/ws";
+        const ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+            document.getElementById('status').innerText = "系统运行正常 (🟢 已连接)";
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.type === 'alarm') {
+                    const logContainer = document.getElementById('alarm-logs');
+                    const item = document.createElement('div');
+                    item.className = 'log-item';
+                    item.innerHTML = `<strong>🚨 闯区报警</strong><br>对象: ${data.driver}<br>围栏: ${data.fence}`;
+                    logContainer.insertBefore(item, logContainer.firstChild);
+                }
+            } catch (e) {
+                console.log("收到原始消息:", event.data);
+            }
+        };
+
+        ws.onclose = () => {
+            document.getElementById('status').innerText = "连接已断开 (🔴 正在重连...)";
+            setTimeout(initWebSocket, 5000);
+        };
+    }
+</script>
 </body>
 </html>

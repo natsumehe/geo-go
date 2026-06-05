@@ -25,8 +25,6 @@ var (
 	rdb      *redis.Client
 	db       *sql.DB
 	posCache sync.Map
-
-	valhallaURL = "http://valhalla-service:8002"
 )
 
 type LastPos struct {
@@ -35,43 +33,72 @@ type LastPos struct {
 	Timestamp time.Time
 }
 
-type LocationReport struct {
-	DeviceID string  `json:"id"`
-	Lat      float64 `json:"lat"`
-	Lng      float64 `json:"lng"`
-	Provider string  `json:"provider"`
-	Accuracy float64 `json:"accuracy"`
-}
-
 type DeviceFilters struct {
 	LatKF *filters.KalmanFilter
 	LngKF *filters.KalmanFilter
 }
 
+var kfStore = sync.Map{}
+
+// 🎯 核心修正 1：放开 WebSocket 跨域，并增加读写锁保障高并发下的并发安全
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
 var (
-	kfStore = sync.Map{}
+	clients   = make(map[*websocket.Conn]bool)
+	clientsMu sync.RWMutex // 用于保护 clients 映射表的互斥锁
 )
 
-var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
-var clients = make(map[*websocket.Conn]bool)
-
 func WsHandler(w http.ResponseWriter, r *http.Request) {
-	conn, _ := upgrader.Upgrade(w, r, nil)
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf(" [❌ WS 升级失败]: %v", err)
+		return
+	}
+
+	clientsMu.Lock()
 	clients[conn] = true
+	clientsMu.Unlock()
+
+	// 保持连接，读取客户端心跳，断开时自动安全注销
+	go func(c *websocket.Conn) {
+		defer func() {
+			c.Close()
+			clientsMu.Lock()
+			delete(clients, c)
+			clientsMu.Unlock()
+		}()
+		for {
+			if _, _, err := c.ReadMessage(); err != nil {
+				break
+			}
+		}
+	}(conn)
 }
 
 func notifyClients(msg string) {
+	clientsMu.RLock()
+	defer clientsMu.RUnlock()
+	// 高并发下，必须遍历安全的镜像或及时清理失效长连接
 	for client := range clients {
-		_ = client.WriteMessage(websocket.TextMessage, []byte(msg))
+		go func(c *websocket.Conn) {
+			err := c.WriteMessage(websocket.TextMessage, []byte(msg))
+			if err != nil {
+				c.Close()
+				clientsMu.Lock()
+				delete(clients, c)
+				clientsMu.Unlock()
+			}
+		}(client)
 	}
 }
 
 func HaversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
 	const R = 6371000
-	phi1 := lat1 * 3.14159 / 180
-	phi2 := lat2 * 3.14159 / 180
-	deltaPhi := (lat2 - lat1) * 3.14159 / 180
-	deltaLambda := (lon2 - lon1) * 3.14159 / 180
+	phi1 := lat1 * math.Pi / 180
+	phi2 := lat2 * math.Pi / 180
+	deltaPhi := (lat2 - lat1) * math.Pi / 180
+	deltaLambda := (lon2 - lon1) * math.Pi / 180
 
 	a := math.Sin(deltaPhi/2)*math.Sin(deltaPhi/2) +
 		math.Cos(phi1)*math.Cos(phi2)*
@@ -81,6 +108,7 @@ func HaversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
 
 func checkFence(driverID string, lng, lat float64) {
 	var fenceName string
+	// 原生 4326 碰撞检测
 	fenceQuery := `
                 SELECT name FROM fences 
                 WHERE ST_Contains(area, ST_SetSRID(ST_MakePoint($1, $2), 4326)) 
@@ -95,10 +123,7 @@ func checkFence(driverID string, lng, lat float64) {
             VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326))`
 
 		_, insertErr := db.Exec(alarmSQL, driverID, fenceName, lng, lat)
-		if insertErr != nil {
-			log.Printf(" [❌ 存档失败] %v", insertErr)
-		} else {
-			log.Printf(" [✅ 存档成功] 违规记录已写入数据库")
+		if insertErr == nil {
 			notifyClients(fmt.Sprintf(`{"type":"alarm","driver":"%s","fence":"%s"}`, driverID, fenceName))
 		}
 	}
@@ -120,17 +145,6 @@ func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 		lngStr = r.URL.Query().Get("lon")
 	}
 
-	provider := r.URL.Query().Get("provider")
-	if provider == "" {
-		provider = "unknown"
-	}
-
-	accStr := r.URL.Query().Get("accuracy")
-	accuracy, _ := strconv.ParseFloat(accStr, 64)
-	if accuracy <= 0 {
-		accuracy = 20.0
-	}
-
 	if id == "" || lngStr == "" || latStr == "" {
 		http.Error(w, "Missing Parameters", http.StatusBadRequest)
 		return
@@ -145,8 +159,8 @@ func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 	})
 	kf := valKF.(*DeviceFilters)
 
-	smoothLat := kf.LatKF.SmartUpdate(lat, accuracy)
-	smoothLng := kf.LngKF.SmartUpdate(lng, accuracy)
+	smoothLat := kf.LatKF.SmartUpdate(lat, 20.0)
+	smoothLng := kf.LngKF.SmartUpdate(lng, 20.0)
 
 	if rdb != nil {
 		rdb.GeoAdd(ctx, "drivers:live", &redis.GeoLocation{
@@ -154,41 +168,35 @@ func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	shouldWriteBusinessHistory := true
+	shouldWriteHistory := true
 	valCache, ok := posCache.Load(id)
 	if ok {
 		last := valCache.(LastPos)
 		dist := HaversineDistance(last.Lat, last.Lng, smoothLat, smoothLng)
 		if dist < 3.0 && time.Since(last.Timestamp) < 10*time.Second {
-			shouldWriteBusinessHistory = false
+			shouldWriteHistory = false
 		}
 	}
 
-	go func(dID string, rawLo, rawLa, smLo, smLa float64, prov string, acc float64, isMoving bool) {
+	go func(dID string, rawLo, rawLa, smLo, smLa float64, isMoving bool) {
 		if db != nil {
 			rawSQL := `INSERT INTO driver_raw_data (name, location, provider, accuracy, created_at)
-                       VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), $4, $5, NOW())`
-			_, _ = db.Exec(rawSQL, dID, rawLo, rawLa, prov, acc)
-
-			upsertSQL := `INSERT INTO devices (device_id, last_lat, last_lng, last_seen, last_provider)
-                          VALUES ($1, $2, $3, NOW(), $4)
-                          ON CONFLICT (device_id) DO UPDATE SET last_lat=$2, last_lng=$3, last_seen=NOW();`
-			_, _ = db.Exec(upsertSQL, dID, smLa, smLo, prov)
+                       VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), 'gps', 20.0, NOW())`
+			_, _ = db.Exec(rawSQL, dID, rawLo, rawLa)
 
 			if isMoving {
 				historySQL := `INSERT INTO driver_history (name, location, provider, accuracy, created_at) 
-                               VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), $4, $5, NOW())`
-				_, _ = db.Exec(historySQL, dID, smLo, smLa, prov, acc)
+                               VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), 'gps', 20.0, NOW())`
+				_, _ = db.Exec(historySQL, dID, smLo, smLa)
 
 				posCache.Store(dID, LastPos{Lat: smLa, Lng: smLo, Timestamp: time.Now()})
-
 				checkFence(dID, smLo, smLa)
 			}
 		}
-	}(id, lng, lat, smoothLng, smoothLat, provider, accuracy, shouldWriteBusinessHistory)
+	}(id, lng, lat, smoothLng, smoothLat, shouldWriteHistory)
 
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "OK: %s Location Filtered & Synced", id)
+	fmt.Fprintf(w, "OK: %s Location Filtered", id)
 }
 
 func HistoryHandle(w http.ResponseWriter, r *http.Request) {
@@ -204,7 +212,7 @@ func HistoryHandle(w http.ResponseWriter, r *http.Request) {
         FROM (
             SELECT location, created_at FROM driver_history 
             WHERE name = $1 
-            ORDER BY created_at DESC 
+            ORDER BY created_at DESC LIMIT 100
         ) AS subquery`
 
 	var geoJSON string
@@ -299,25 +307,12 @@ func main() {
 		redisAddr = "redis:6379"
 	}
 
-	fmt.Printf("[DEBUG] 尝试连接数据库地址: %s\n", connStr)
-	fmt.Printf("[DEBUG] 尝试连接 Redis 地址: %s\n", redisAddr)
-
 	rdb = redis.NewClient(&redis.Options{Addr: redisAddr})
 
 	var err error
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
-		log.Fatalf("❌ 数据库驱动加载失败: %v", err)
-	}
-
-	for i := 0; i < 5; i++ {
-		err = db.Ping()
-		if err == nil {
-			fmt.Println("✅ 数据库连接成功！")
-			break
-		}
-		fmt.Printf("⚠️ 数据库连接尝试 (%d/5) 失败: %v，等待重试...\n", i+1, err)
-		time.Sleep(2 * time.Second)
+		log.Fatalf("❌ 数据库加载失败: %v", err)
 	}
 
 	http.HandleFunc("/update", UpdateHandle)
@@ -327,8 +322,7 @@ func main() {
 	http.HandleFunc("/fences", FencesHandle)
 	http.HandleFunc("/ws", WsHandler)
 
-	// 4. 🎯 【PostGIS 原生高并发矢量瓦片服务】彻底解耦依赖，替代不可用的第三方镜像
-	// 前端 MapLibre 统一请求格式: /tiles/{layerName}/{z}/{x}/{y}.mvt
+	// 🎯 核心修正 2：重写高性能、索引友好型动态 MVT 空间切片服务
 	http.HandleFunc("/tiles/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
@@ -344,7 +338,7 @@ func main() {
 		path = strings.TrimSuffix(path, ".mvt")
 		parts := strings.Split(path, "/")
 		if len(parts) < 4 {
-			http.Error(w, "Bad Request: Invalid URL parts", http.StatusBadRequest)
+			http.Error(w, "Bad Request", http.StatusBadRequest)
 			return
 		}
 
@@ -356,21 +350,20 @@ func main() {
 		var mvtQuery string
 		switch layerName {
 		case "fences":
-			// 动态切片：围栏表
+			// 🚀 性能优化：将瓦片信封转换为 4326 后与原始 area 进行相交，完美激活数据库的 GIST 空间索引
 			mvtQuery = `
 				WITH tilegeom AS (
 					SELECT id, name, ST_AsMVTGeom(ST_Transform(area, 3857), ST_TileEnvelope($1, $2, $3), 4096, 64, true) AS geom
 					FROM fences
-					WHERE ST_Intersects(ST_Transform(area, 3857), ST_TileEnvelope($1, $2, $3))
+					WHERE area && ST_Transform(ST_TileEnvelope($1, $2, $3), 4326)
 				)
 				SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
 		case "history":
-			// 动态切片：轨迹点/线图层
 			mvtQuery = `
 				WITH tilegeom AS (
 					SELECT name, ST_AsMVTGeom(ST_Transform(location, 3857), ST_TileEnvelope($1, $2, $3), 4096, 64, true) AS geom
 					FROM driver_history
-					WHERE ST_Intersects(ST_Transform(location, 3857), ST_TileEnvelope($1, $2, $3))
+					WHERE location && ST_Transform(ST_TileEnvelope($1, $2, $3), 4326)
 				)
 				SELECT ST_AsMVT(tilegeom.*, 'history') FROM tilegeom;`
 		default:
@@ -380,13 +373,8 @@ func main() {
 
 		var tileData []byte
 		err := db.QueryRow(mvtQuery, z, x, y).Scan(&tileData)
-		if err != nil {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-
-		if len(tileData) == 0 {
-			w.WriteHeader(http.StatusNoContent)
+		if err != nil || len(tileData) == 0 {
+			w.WriteHeader(http.StatusNoContent) // 无数据直接返回 204
 			return
 		}
 
@@ -394,20 +382,9 @@ func main() {
 		_, _ = w.Write(tileData)
 	})
 
-	staticDir := "/app/static"
-	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
-		staticDir = "./static"
-	}
+	staticDir := "./static"
 	http.Handle("/", http.FileServer(http.Dir(staticDir)))
 
-	go func() {
-		fmt.Println("🔓 HTTP 备用服务启动: 8080")
-		_ = http.ListenAndServe(":8080", nil)
-	}()
-
-	fmt.Println("🔒 HTTPS 安全服务准备启动: 443")
-	err = http.ListenAndServeTLS(":443", "/ssl/cert.pem", "/ssl/cert.key", nil)
-	if err != nil {
-		log.Fatalf("❌ HTTPS 启动失败 (请检查 /ssl 绝对路径与证书链): %v", err)
-	}
+	log.Println("🚀 后端服务在 :8080 端口无损启动...")
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }

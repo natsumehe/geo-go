@@ -1,5 +1,5 @@
 /**
- * Geo-Go 指挥中心核心引擎 (MapLibre 高性能 WebGL 边界锁死版)
+ * Geo-Go 指挥中心核心引擎 (MapLibre + PostGIS 原生全矢量咬合版)
  */
 const App = {
     map: null,
@@ -8,8 +8,7 @@ const App = {
     scrollTimeout: null,
     id: null,
 
-    // 🎯 精准限定上海的地理外延边界（西南角坐标 [lng, lat]，东北角坐标 [lng, lat]）
-    // 强制阻止用户通过拖拽地图去窥探或触发无数据盲区的切片请求
+    // 🎯 精准限定上海的地理外延边界，阻止用户拖拽到无数据盲区
     shanghaiBounds: [
         [121.10, 30.90], // 西南角: 青浦、松江南部边缘
         [121.75, 31.50]  // 东北角: 崇明南部、浦东机场外海边缘
@@ -43,97 +42,80 @@ const App = {
     },
 
     initMap() {
-        // 初始化 MapLibre WebGL 地图
+        // 🎯 核心修复：将地图实例赋给 App.map
         this.map = new maplibregl.Map({
             container: 'map',
-            center: [121.4737, 31.2304],    // 初始中心点：上海市中心（延安东路附近）
-            zoom: 13,                       // 默认初始化层级
-            minZoom: 13,                    // 🚀 🔥【核心修改 1】锁死最小缩放！绝对不允许低于13级，从源头掐断低级别瓦片越界 400 报错
-            maxZoom: 17,                    // 最大放大层级
-            maxBounds: this.shanghaiBounds, // 🚀 🔥【核心修改 2】锁死物理推拽边界，拖不出上海范围
-            pitch: 45,                      // 倾斜视角，更具指挥中心立体感
-            style: {
-                version: 8,
-                sources: {
-                    // 🎯 完美对接后端的 Valhalla 矢量切片
-                    "valhalla-roads": {
-                        type: "vector",
-                        // 统一走标准的 restful 格式，后端的 Go 拦截器会自动动态洗成 Query 参数发给 Valhalla
-                        tiles: [window.location.origin + "/valhalla/tile/{z}/{x}/{y}.mvt"],
-                        minzoom: 13,        // 🚀 🔥【核心修改 3】数据源最小缩放对齐 13，不拉取低层级
-                        maxzoom: 16         // 配合路网最高层级
-                    }
-                },
-                layers: [
-                    {
-                        "id": "background",
-                        "type": "background",
-                        "paint": { "background-color": "#0b0f19" } // 指挥中心科技暗色调
-                    },
-                    {
-                        "id": "roads-layer",
-                        "type": "line",
-                        "source": "valhalla-roads",
-                        "source-layer": "roads", // 对应 Valhalla 切片内部的图层名称
-                        "paint": {
-                            "line-color": "#1f293d",
-                            "line-width": 1.2
-                        }
-                    },
-                    // 🎯 【可选增强】为主干道/高速增加一层高亮渲染，视觉效果更好
-                    {
-                        "id": "major-roads-layer",
-                        "type": "line",
-                        "source": "valhalla-roads",
-                        "source-layer": "roads",
-                        "filter": ["in", "highway", "motorway", "trunk", "primary"],
-                        "paint": {
-                            "line-color": "#2a59a8",
-                            "line-width": 2.5
-                        }
-                    }
-                ]
-            }
+            center: [121.4737, 31.2304],    // 初始中心点：上海市中心
+            zoom: 13,                       
+            minZoom: 10,                    // 适当放开到 10 级，保证能看清上海全貌
+            maxZoom: 18,                    
+            maxBounds: this.shanghaiBounds, 
+            pitch: 45,                      // 倾斜视角
+            // 🎯 核心修改：放弃无法吐出 MVT 的 Valhalla 底图，换用公网免费科技暗色标准底图，或者留空全黑背景
+            style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
         });
 
+        // 🎯 核心生命周期：严格在 load 回调中，使用 this.map 进行注入
         this.map.on('load', () => {
-            console.log("Valhalla WebGL 动态矢量路网底座无损绑定成功");
+            console.log("基础底图渲染成功，开始注入 PostGIS 高性能原生业务图层...");
             
-            // 1. 添加地理围栏数据源
-map.addSource('fences-mvt-source', {
-    'type': 'vector',
-    'tiles': [
-        // 🎯 动态获取当前域名，直连你的 Go 统一接口
-        window.location.protocol + '//' + window.location.host + '/tiles/fences/{z}/{x}/{y}.mvt'
-    ],
-    'minzoom': 0,
-    'maxzoom': 22
-});
+            const mvtHost = window.location.protocol + '//' + window.location.host;
 
-// 2. 渲染围栏填充色
-map.addLayer({
-    'id': 'fences-layer-fill',
-    'type': 'fill',
-    'source': 'fences-mvt-source',
-    'source-layer': 'fences', // 必须和 Go 中 ST_AsMVT(tilegeom.*, 'fences') 的名字完全对应
-    'paint': {
-        'fill-color': '#007cbf',
-        'fill-opacity': 0.2
-    }
-});
+            // 1. 🔗 注入地理围栏空间矢量瓦片源 (MVT)
+            this.map.addSource('fences-mvt-source', {
+                'type': 'vector',
+                'tiles': [
+                    mvtHost + '/tiles/fences/{z}/{x}/{y}.mvt'
+                ],
+                'minzoom': 0,
+                'maxzoom': 22
+            });
 
-// 3. 渲染围栏边界轮廓
-map.addLayer({
-    'id': 'fences-layer-outline',
-    'type': 'line',
-    'source': 'fences-mvt-source',
-    'source-layer': 'fences',
-    'paint': {
-        'line-color': '#007cbf',
-        'line-width': 2
-    }
-});
-            this.loadFences();
+            // 🎨 渲染围栏多边形浅蓝色填充
+            this.map.addLayer({
+                'id': 'fences-layer-fill',
+                'type': 'fill',
+                'source': 'fences-mvt-source',
+                'source-layer': 'fences', // 对应 Go 中 ST_AsMVT 的图层标识
+                'paint': {
+                    'fill-color': '#007cbf',
+                    'fill-opacity': 0.18
+                }
+            });
+
+            // 🎨 渲染围栏高亮物理边框
+            this.map.addLayer({
+                'id': 'fences-layer-outline',
+                'type': 'line',
+                'source': 'fences-mvt-source',
+                'source-layer': 'fences',
+                'paint': {
+                    'line-color': '#00d2ff',
+                    'line-width': 2
+                }
+            });
+
+            // 2. 🔗 初始化动态设备轨迹数据源（供 draw 方法实时操作，避免频繁 rebuild）
+            this.map.addSource('device-track', {
+                'type': 'geojson',
+                'data': { 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': [] } }
+            });
+            this.map.addLayer({
+                'id': 'track-layer', 'type': 'line', 'source': 'device-track',
+                'layout': { 'line-join': 'round', 'line-cap': 'round' },
+                'paint': { 'line-color': '#ffea00', 'line-width': 4 } // 亮黄色轨迹
+            });
+
+            this.map.addSource('device-pointer', {
+                'type': 'geojson',
+                'data': { 'type': 'Feature', 'geometry': { 'type': 'Point', 'coordinates': [0, 0] } }
+            });
+            this.map.addLayer({
+                'id': 'pointer-layer', 'type': 'circle', 'source': 'device-pointer',
+                'paint': { 'circle-radius': 7, 'circle-color': '#ff3333', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' }
+            });
+
+            // 💡 提示：原先混乱的 this.loadFences() 已被 MVT 完全平替，在此直接废弃
         });
     },
 
@@ -215,36 +197,22 @@ map.addLayer({
         } catch (e) { console.error("Track error", e); }
     },
 
-    async loadFences() {
-        try {
-            const res = await fetch('/fences');
-            const data = await res.json();
-            
-            this.map.addSource('fences-src', { type: 'geojson', data: data });
-            this.map.addLayer({
-                id: 'fences-layer', type: 'fill', source: 'fences-src',
-                paint: { 'fill-color': '#ff3300', 'fill-opacity': 0.15 }
-            });
-            this.map.addLayer({
-                id: 'fences-outline', type: 'line', source: 'fences-src',
-                paint: { 'line-color': '#ff3300', 'line-width': 2, 'line-dasharray': [2, 4] }
-            });
-        } catch (e) { console.error("加载围栏失败:", e); }
-    },
-
     draw(coordinates) {
-        if (!coordinates || coordinates.length === 0) return;
+        if (!coordinates || coordinates.length === 0 || !this.map) return;
         const lastPoint = coordinates[coordinates.length - 1];
 
-        // WebGL 动态更新数据源，不损耗内存
-        if (this.map.getSource('device-track')) {
-            this.map.getSource('device-track').setData({
+        // 🎯 核心修复：严格使用 this.map 保证对数据源的调用安全
+        const trackSource = this.map.getSource('device-track');
+        if (trackSource) {
+            trackSource.setData({
                 type: 'Feature',
                 geometry: { type: 'LineString', coordinates: coordinates }
             });
         }
-        if (this.map.getSource('device-pointer')) {
-            this.map.getSource('device-pointer').setData({
+        
+        const pointerSource = this.map.getSource('device-pointer');
+        if (pointerSource) {
+            pointerSource.setData({
                 type: 'Feature',
                 geometry: { type: 'Point', coordinates: lastPoint }
             });
