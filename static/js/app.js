@@ -50,12 +50,19 @@ const App = {
                 const tile = document.createElement('canvas');
                 tile.width = tile.height = 256;
 
-                // 1. 🎯 保持 Y 轴 TMS 转换
+                // 1. 保持 Y 轴 TMS 转换
                 const tmsY = Math.pow(2, coords.z) - 1 - coords.y;
 
-                // 2. 🎯 【核心对齐】放弃伪静态路径，严格对齐官方 Loki 路由参数规范
-                // 必须通过 ? 传参，且不能加 .mvt 后缀
-                const requestUrl = `/valhalla/tile?layer=0&z=${coords.z}&x=${coords.x}&y=${tmsY}`;
+                // 2. 🎯 【终极对齐】对齐 Valhalla 官方原生 Loki 接收器接收的标准 json string 格式
+                const tileJson = JSON.stringify({
+                    layers: [0], // 0 代表基本路网
+                    z: coords.z,
+                    x: coords.x,
+                    y: tmsY
+                });
+
+                // 3. 🎯 直接塞进 json 参数里，这是 Valhalla 全局通用的骨架
+                const requestUrl = `/valhalla/tile?json=${encodeURIComponent(tileJson)}`;
 
                 fetch(requestUrl)
                     .then(res => {
@@ -67,7 +74,7 @@ const App = {
                     })
                     .then(buffer => {
                         if (!buffer) return;
-                        console.log(`%c 🎯 Valhalla 握手成功! 成功捕获切片: ${coords.z}/${coords.x}/${tmsY}`, "color: #00f2ff");
+                        console.log(`%c 🎯 [200 OK] 成功握手 Valhalla 二进制切片: ${coords.z}/${coords.x}/${tmsY}`, "color: #00f2ff");
                         done(null, tile);
                     })
                     .catch(() => {
