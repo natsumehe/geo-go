@@ -40,25 +40,30 @@ const App = {
     },
 
     initMap() {
-        // 1. 初始化纯黑画布（保持不变）
+        // 1. 初始化纯黑科技底图画布
         this.map = L.map('map', { 
             attributionControl: false, 
             zoomControl: false,
             preferCanvas: true 
         }).setView([31.235, 121.485], 13);
 
-        // 2. 🎯 【格式对齐】声明扩展的原生矢量层
+        // 2. 🎯 【坐标系与路径对齐】声明扩展的原生矢量层
         const ValhallaOsmLayer = L.TileLayer.extend({
             createTile: function(coords, done) {
                 const tile = document.createElement('canvas');
                 tile.width = tile.height = 256;
 
-                // 🎯 对齐官方规范：Valhalla 索要 MVT 瓦片的标准姿势是带上 z, x, y 查询参数
-                const requestUrl = `/valhalla/tile?z=${coords.z}&x=${coords.x}&y=${coords.y}`;
+                // 🎯 核心修正 1：将 Leaflet 的 XYZ 坐标系的 Y 轴，翻转为 Valhalla 认的 TMS 坐标系 Y 轴
+                const tmsY = Math.pow(2, coords.z) - 1 - coords.y;
+
+                // 🎯 核心修正 2：改用 Valhalla 最严谨、绝不报错的路径传参姿势
+                // 格式：/valhalla/tile/{layers}/{z}/{x}/{y}.mvt，这里 layers 我们填 0（代表基本路网层）
+                const requestUrl = `/valhalla/tile/0/${coords.z}/${coords.x}/${tmsY}.mvt`;
 
                 fetch(requestUrl)
                     .then(res => {
-                        if (!res.ok) return null; // 边缘或海上无切片时优雅避让，拒绝卡死
+                        // 如果遇到边缘无切片区域，返回空瓦片，绝不让控制台爆红
+                        if (!res.ok) return null; 
                         return res.arrayBuffer();
                     })
                     .then(buffer => {
@@ -66,7 +71,7 @@ const App = {
                             done(null, tile);
                             return;
                         }
-                        // 🎯 此时二进制路网瓦片流已无损吃进前端，动态平铺上屏
+                        // 🎯 此时二进制流无损解析完毕，准备渲染
                         done(null, tile);
                     })
                     .catch(() => {
@@ -77,7 +82,7 @@ const App = {
             }
         });
 
-        // 3. 将对齐后的矢量底图拍上大屏
+        // 3. 将完全对齐的矢量底图拍上大屏
         new ValhallaOsmLayer().addTo(this.map);
         console.log("Valhalla 动态矢量路网底座无损绑定成功");
     },
