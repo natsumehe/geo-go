@@ -1,5 +1,5 @@
 /**
- * Geo-Go 指挥中心核心引擎 (MapLibre 高性能 WebGL 版)
+ * Geo-Go 指挥中心核心引擎 (MapLibre 高性能 WebGL 边界锁死版)
  */
 const App = {
     map: null,
@@ -7,6 +7,13 @@ const App = {
     pollTimer: null,
     scrollTimeout: null,
     id: null,
+
+    // 🎯 精准限定上海的地理外延边界（西南角坐标 [lng, lat]，东北角坐标 [lng, lat]）
+    // 强制阻止用户通过拖拽地图去窥探或触发无数据盲区的切片请求
+    shanghaiBounds: [
+        [121.10, 30.90], // 西南角: 青浦、松江南部边缘
+        [121.75, 31.50]  // 东北角: 崇明南部、浦东机场外海边缘
+    ],
 
     getDeviceID() {
         let id = localStorage.getItem('geo_device_id');
@@ -32,7 +39,6 @@ const App = {
         this.initMap();
         this.startDiscovery();
         this.bindSwiper();
-        // 围栏加载移入地图 load 事件中
         console.log("Radar System Initialized.");
     },
 
@@ -40,18 +46,22 @@ const App = {
         // 初始化 MapLibre WebGL 地图
         this.map = new maplibregl.Map({
             container: 'map',
-            center: [121.4737, 31.2304],
-            zoom: 13,
-            pitch: 45, // 倾斜视角，更具指挥中心立体感
+            center: [121.4737, 31.2304],    // 初始中心点：上海市中心（延安东路附近）
+            zoom: 13,                       // 默认初始化层级
+            minZoom: 13,                    // 🚀 🔥【核心修改 1】锁死最小缩放！绝对不允许低于13级，从源头掐断低级别瓦片越界 400 报错
+            maxZoom: 17,                    // 最大放大层级
+            maxBounds: this.shanghaiBounds, // 🚀 🔥【核心修改 2】锁死物理推拽边界，拖不出上海范围
+            pitch: 45,                      // 倾斜视角，更具指挥中心立体感
             style: {
                 version: 8,
                 sources: {
                     // 🎯 完美对接后端的 Valhalla 矢量切片
                     "valhalla-roads": {
                         type: "vector",
+                        // 统一走标准的 restful 格式，后端的 Go 拦截器会自动动态洗成 Query 参数发给 Valhalla
                         tiles: [window.location.origin + "/valhalla/tile/{z}/{x}/{y}.mvt"],
-                        minzoom: 0,
-                        maxzoom: 16
+                        minzoom: 13,        // 🚀 🔥【核心修改 3】数据源最小缩放对齐 13，不拉取低层级
+                        maxzoom: 16         // 配合路网最高层级
                     }
                 },
                 layers: [
@@ -68,6 +78,18 @@ const App = {
                         "paint": {
                             "line-color": "#1f293d",
                             "line-width": 1.2
+                        }
+                    },
+                    // 🎯 【可选增强】为主干道/高速增加一层高亮渲染，视觉效果更好
+                    {
+                        "id": "major-roads-layer",
+                        "type": "line",
+                        "source": "valhalla-roads",
+                        "source-layer": "roads",
+                        "filter": ["in", "highway", "motorway", "trunk", "primary"],
+                        "paint": {
+                            "line-color": "#2a59a8",
+                            "line-width": 2.5
                         }
                     }
                 ]
