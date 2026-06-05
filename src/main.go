@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"geo-go/filters"
+	"io"
 	"log"
 	"math"
 	"net/http"
@@ -25,6 +26,8 @@ var (
 	rdb      *redis.Client
 	db       *sql.DB
 	posCache sync.Map
+
+	valhallaURL = "http://valhalla-service:8002"
 )
 
 type LastPos struct {
@@ -413,6 +416,37 @@ func main() {
 	http.HandleFunc("/alarms", AlarmsHandle)
 	http.HandleFunc("/list", ListHandle)
 	http.HandleFunc("/fences", FencesHandle)
+
+	// 【新增】将前端的所有矢量渲染请求，透明转发给内网 8002 端口的 Valhalla
+	http.HandleFunc("/valhalla/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		// 替换请求路径，直接打向 Docker 内网的 Valhalla 容器
+		targetPath := strings.TrimPrefix(r.URL.Path, "/valhalla")
+		targetURL := fmt.Sprintf("%s%s", valhallaURL, targetPath)
+		if r.URL.RawQuery != "" {
+			targetURL = fmt.Sprintf("%s?%s", targetURL, r.URL.RawQuery)
+		}
+
+		// 利用 Go 官方的标准代理器进行透明传输，内存消耗接近 0
+		proxyReq, _ := http.NewRequest(r.Method, targetURL, r.Body)
+		proxyReq.Header = r.Header
+		resp, err := http.DefaultClient.Do(proxyReq)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		// 将 Valhalla 的响应透传给前端 Leaflet
+		for k, vv := range resp.Header {
+			for _, v := range vv {
+				w.Header().Add(k, v)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body)
+	})
 
 	// 自动适配容器与本地路径
 	staticDir := "/app/static"
