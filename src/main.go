@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"geo-go/filters"
 	"log"
 	"math"
 	"net/http"
@@ -20,12 +19,34 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-var (
-	ctx      = context.Background()
-	rdb      *redis.Client
-	db       *sql.DB
-	posCache sync.Map
-)
+// ==========================================
+// 🛡️ 轨迹采集器核心：卡尔曼滤波器（平滑跳点与GPS漂移）
+// ==========================================
+type KalmanFilter struct {
+	LastValue float64 // 上一次的估计值
+	P         float64 // 估计误差协方差
+	Q         float64 // 过程噪声协方差
+	R         float64 // 测量噪声协方差
+}
+
+// SmartUpdate 负责过滤由于高楼反射引起的 GPS 突变跳点
+func (kf *KalmanFilter) SmartUpdate(measuredValue float64, maxDelta float64) float64 {
+	if math.Abs(measuredValue-kf.LastValue) > maxDelta {
+		// 超过突变阈值，判定为单点漂移，暂时保持上一状态
+		return kf.LastValue
+	}
+	// 标准卡尔曼公式收敛迭代
+	kf.P = kf.P + kf.Q
+	kGain := kf.P / (kf.P + kf.R)
+	kf.LastValue = kf.LastValue + kGain*(measuredValue-kf.LastValue)
+	kf.P = (1 - kGain) * kf.P
+	return kf.LastValue
+}
+
+type DeviceFilters struct {
+	LatKF *KalmanFilter
+	LngKF *KalmanFilter
+}
 
 type LastPos struct {
 	Lat       float64
@@ -33,13 +54,15 @@ type LastPos struct {
 	Timestamp time.Time
 }
 
-type DeviceFilters struct {
-	LatKF *filters.KalmanFilter
-	LngKF *filters.KalmanFilter
-}
+var (
+	ctx      = context.Background()
+	rdb      *redis.Client
+	db       *sql.DB
+	posCache sync.Map
+	kfStore  sync.Map
+)
 
-var kfStore = sync.Map{}
-
+// WebSocket 广播控制器
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
@@ -124,6 +147,9 @@ func checkFence(driverID string, lng, lat float64) {
 	}
 }
 
+// ==========================================
+// 🚗 轨迹采集与处理器核心接口
+// ==========================================
 func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -148,9 +174,10 @@ func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 	lng, _ := strconv.ParseFloat(lngStr, 64)
 	lat, _ := strconv.ParseFloat(latStr, 64)
 
+	// 并发安全地提取特定车辆的卡尔曼状态机
 	valKF, _ := kfStore.LoadOrStore(id, &DeviceFilters{
-		LatKF: &filters.KalmanFilter{LastValue: lat, P: 1.0, Q: 0.000001, R: 0.0001},
-		LngKF: &filters.KalmanFilter{LastValue: lng, P: 1.0, Q: 0.000001, R: 0.0001},
+		LatKF: &KalmanFilter{LastValue: lat, P: 1.0, Q: 0.000001, R: 0.0001},
+		LngKF: &KalmanFilter{LastValue: lng, P: 1.0, Q: 0.000001, R: 0.0001},
 	})
 	kf := valKF.(*DeviceFilters)
 
@@ -168,6 +195,7 @@ func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 	if ok {
 		last := valCache.(LastPos)
 		dist := HaversineDistance(last.Lat, last.Lng, smoothLat, smoothLng)
+		// 动态静止抑制：避免车辆停放时在原地高频刷点产生脏数据
 		if dist < 3.0 && time.Since(last.Timestamp) < 10*time.Second {
 			shouldWriteHistory = false
 		}
@@ -194,7 +222,6 @@ func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "OK: %s Location Filtered", id)
 }
 
-// 🎯 核心逻辑保留：这里会从 driver_history 数据库中，把特定司机的点集转化为标准前端可解析的 LineString GeoJSON
 func HistoryHandle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	id := r.URL.Query().Get("id")
@@ -314,7 +341,7 @@ func main() {
 	for i := 0; i < 5; i++ {
 		err = db.Ping()
 		if err == nil {
-			fmt.Println("✅ 数据库连接成功！")
+			fmt.Println("✅ PostGIS 数据库连接成功！")
 			break
 		}
 		fmt.Printf("⚠️ 数据库连接尝试 (%d/5) 失败: %v，等待重试...\n", i+1, err)
@@ -328,7 +355,9 @@ func main() {
 	http.HandleFunc("/fences", FencesHandle)
 	http.HandleFunc("/ws", WsHandler)
 
-	// 🎯 围栏继续使用 MVT 高效渲染切片，完美适配空间大屏
+	// ==========================================
+	// ⚡ PostGIS 核心：多图层动态瓦片裁剪服务 (MVT)
+	// ==========================================
 	http.HandleFunc("/tiles/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
@@ -363,6 +392,18 @@ func main() {
 					WHERE area && ST_Transform(ST_TileEnvelope($1, $2, $3), 4326)
 				)
 				SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
+
+		case "roads":
+			// 🛰️ 注意：osm2pgsql 导入的数据默认是 3857 墨卡托，因此 way 不需要重复做 ST_Transform
+			mvtQuery = `
+				WITH tilegeom AS (
+					SELECT osm_id, name, highway, ST_AsMVTGeom(way, ST_TileEnvelope($1, $2, $3), 4096, 64, true) AS geom
+					FROM planet_osm_line
+					WHERE highway IS NOT NULL 
+					  AND way && ST_Transform(ST_TileEnvelope($1, $2, $3), 4326)
+				)
+				SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`
+
 		default:
 			http.Error(w, "Layer not found", http.StatusNotFound)
 			return
@@ -386,13 +427,13 @@ func main() {
 	http.Handle("/", http.FileServer(http.Dir(staticDir)))
 
 	go func() {
-		fmt.Println("🔓 HTTP 备用服务启动: 8080")
+		fmt.Println("🔓 HTTP 监控主服务已建立: 8080")
 		_ = http.ListenAndServe(":8080", nil)
 	}()
 
-	fmt.Println("🔒 HTTPS 安全服务准备启动: 443")
+	fmt.Println("🔒 HTTPS 分发网关已就绪: 443")
 	err = http.ListenAndServeTLS(":443", "/ssl/cert.pem", "/ssl/cert.key", nil)
 	if err != nil {
-		log.Fatalf("❌ HTTPS 启动失败 (请检查 /ssl 路径与证书): %v", err)
+		log.Fatalf("❌ 安全网关监听失败: %v", err)
 	}
 }

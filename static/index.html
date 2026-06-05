@@ -27,7 +27,7 @@
     <h3>实时状态监控</h3>
     <div id="status">系统初始化中...</div>
     
-    <div style="margin-top: 10px; font-weight: bold; font-size: 13px; color: #555;">🚗 活跃车辆发现 (点击追踪)</div>
+    <div style="margin-top: 10px; font-weight: bold; font-size: 13px; color: #555;">🚗 活跃车辆发现 (点击锁定)</div>
     <div id="device-list" style="max-height: 100px; overflow-y: auto; margin-bottom: 10px;"></div>
 
     <div id="alarm-logs"></div>
@@ -48,12 +48,12 @@
     });
 
     map.on('load', () => {
-        console.log("MapLibre 加载完毕...");
-        document.getElementById('status').innerText = "地图及围栏就绪，正在追踪数据...";
+        console.log("MapLibre 空间图层就绪...");
+        document.getElementById('status').innerText = "底图及高性能路网就绪，正在追踪数据...";
 
         const mvtHost = window.location.protocol + '//' + window.location.host;
 
-        // 1. 🔗 矢量切片加载高并发围栏 (MVT)
+        // 1. 🔗 空间切片叠加：业务地理围栏 (MVT)
         map.addSource('fences-mvt-source', {
             'type': 'vector',
             'tiles': [ mvtHost + '/tiles/fences/{z}/{x}/{y}.mvt' ]
@@ -67,7 +67,22 @@
             'paint': { 'line-color': '#007cbf', 'line-width': 2 }
         });
 
-        // 2. 🎯 重新锁死你的全量 GeoJSON 动态轨迹数据源 (精准匹配你的单兵数据库读取需求)
+        // 2. 🛰️ 空间切片叠加：OSM.pbf 物理拓扑道路网 (MVT)
+        map.addSource('roads-mvt-source', {
+            'type': 'vector',
+            'tiles': [ mvtHost + '/tiles/roads/{z}/{x}/{y}.mvt' ]
+        });
+        map.addLayer({
+            'id': 'roads-layer-line', 'type': 'line', 'source': 'roads-mvt-source', 'source-layer': 'roads',
+            'layout': { 'line-join': 'round', 'line-cap': 'round' },
+            'paint': {
+                'line-color': '#2ECC71', // 荧光绿路网线条
+                'line-width': ['interpolate', ['linear'], ['zoom'], 10, 1.0, 15, 3.0, 18, 6.0],
+                'line-opacity': 0.65
+            }
+        }, 'fences-layer-outline'); 
+
+        // 3. 🎯 全量单兵精细化实时轨迹追踪层 (GeoJSON 锁死)
         map.addSource('device-track-source', {
             'type': 'geojson',
             'data': { 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': [] } }
@@ -75,15 +90,13 @@
         map.addLayer({
             'id': 'track-layer', 'type': 'line', 'source': 'device-track-source',
             'layout': { 'line-join': 'round', 'line-cap': 'round' },
-            'paint': { 'line-color': '#ff5500', 'line-width': 4 }
+            'paint': { 'line-color': '#ff5500', 'line-width': 4 } // 亮橙色轨迹主线
         });
 
-        // 3. 开启设备自动发现机制并建立 WebSocket
         startDiscovery();
         initWebSocket();
     });
 
-    // 🔄 自动从后端 /list 获取上报过的司机
     async function startDiscovery() {
         const refresh = async () => {
             try {
@@ -93,17 +106,16 @@
                 if(!container) return;
                 
                 if(!devices || devices.length === 0) {
-                    container.innerHTML = '<div style="font-size:12px; color:#999;">暂无轨迹数据</div>';
+                    container.innerHTML = '<div style="font-size:12px; color:#999;">暂无活跃采集设备</div>';
                     return;
                 }
 
                 container.innerHTML = devices.map(id => `
                     <div class="device-slide ${id === currentDeviceID ? 'active' : ''}" onclick="selectDevice('${id}')">
-                        🆔 司机: ${id}
+                        🆔 设备: ${id}
                     </div>
                 `).join('');
 
-                // 默认选择第一个发现的司机进行追踪
                 if (!currentDeviceID && devices.length > 0) {
                     selectDevice(devices[0]);
                 }
@@ -113,7 +125,6 @@
         setInterval(refresh, 5000);
     }
 
-    // 🎯 选定特定司机，死锁轮询其在 driver_history 中的实时轨迹
     function selectDevice(id) {
         currentDeviceID = id;
         document.querySelectorAll('.device-slide').forEach(el => {
@@ -126,11 +137,8 @@
                 const res = await fetch(`/history?id=${encodeURIComponent(id)}`);
                 const data = await res.json();
                 
-                // 确保后端有返回坐标点串
                 if (data && data.coordinates && data.coordinates.length > 0) {
                     const coords = data.coordinates;
-                    
-                    // 刷新地图图层数据
                     const source = map.getSource('device-track-source');
                     if (source) {
                         source.setData({
@@ -138,14 +146,13 @@
                             'geometry': { 'type': 'LineString', 'coordinates': coords }
                         });
                     }
-                    // 自动把地图核心平移到司机最新上报的轨迹终点上
                     map.easeTo({ center: coords[coords.length - 1], duration: 500 });
                 }
-            } catch (e) { console.error("读取历史轨迹崩溃:", e); }
+            } catch (e) { console.error("轨迹通道同步异常:", e); }
         };
         
         fetchTrack();
-        pollTimer = setInterval(fetchTrack, 3000);
+        pollTimer = setInterval(fetchTrack, 3000); // 3秒死锁轮询
     }
 
     function initWebSocket() {
@@ -154,7 +161,7 @@
         const ws = new WebSocket(wsUrl);
 
         ws.onopen = () => {
-            document.getElementById('status').innerText = "系统运行正常 (🟢 已连接)";
+            document.getElementById('status').innerText = "系统运行正常 (🟢 实时链路通畅)";
         };
 
         ws.onmessage = (event) => {
@@ -164,14 +171,14 @@
                     const logContainer = document.getElementById('alarm-logs');
                     const item = document.createElement('div');
                     item.className = 'log-item';
-                    item.innerHTML = `<strong>🚨 闯区报警</strong><br>对象: ${data.driver}<br>围栏: ${data.fence}`;
+                    item.innerHTML = `<strong>🚨 违规闯区</strong><br>对象: ${data.driver}<br>围栏: ${data.fence}`;
                     logContainer.insertBefore(item, logContainer.firstChild);
                 }
             } catch (e) { console.log(event.data); }
         };
 
         ws.onclose = () => {
-            document.getElementById('status').innerText = "连接已断开 (🔴 正在重连...)";
+            document.getElementById('status').innerText = "链路意外中断 (🔴 自动重连中...)";
             setTimeout(initWebSocket, 5000);
         };
     }
