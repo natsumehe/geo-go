@@ -40,37 +40,25 @@ const App = {
     },
 
     initMap() {
-        // 1. 初始化纯黑科技感底图画布，强制开启 Canvas 硬件加速渲染
+        // 1. 初始化纯黑画布（保持不变）
         this.map = L.map('map', { 
             attributionControl: false, 
             zoomControl: false,
-            preferCanvas: true // 🎯 【核心修正】显式开启 Canvas 性能暴增
-        }).setView([31.235, 121.485], 13); // 默认定位在上海市中心层级
+            preferCanvas: true 
+        }).setView([31.235, 121.485], 13);
 
-        // 2. 🎯 【无损对齐】直接使用物理挂载的上海全量 OSM 编译出的瓦片服务
-        // 放弃之前产生 400/500 断层的 /locate 单点请求
-        const valhallaMvtUrl = '/valhalla/tile/{z}/{x}/{y}.mvt';
-
+        // 2. 🎯 【格式对齐】声明扩展的原生矢量层
         const ValhallaOsmLayer = L.TileLayer.extend({
             createTile: function(coords, done) {
                 const tile = document.createElement('canvas');
                 tile.width = tile.height = 256;
-                const ctx = tile.getContext('2d');
 
-                // 🎨 调配上海“四年线路”标志性的发光霓虹蓝科技线条样式
-                ctx.strokeStyle = '#00f2ff'; 
-                ctx.lineWidth = 1.2;
-
-                // 无损拼接当前切片的相对请求路径，通过你的 Go 后端透明通道无缝转发
-                const requestUrl = valhallaMvtUrl
-                    .replace('{z}', coords.z)
-                    .replace('{x}', coords.x)
-                    .replace('{y}', coords.y);
+                // 🎯 对齐官方规范：Valhalla 索要 MVT 瓦片的标准姿势是带上 z, x, y 查询参数
+                const requestUrl = `/valhalla/tile?z=${coords.z}&x=${coords.x}&y=${coords.y}`;
 
                 fetch(requestUrl)
                     .then(res => {
-                        // 🎯 【防崩逻辑】边缘区域、海上如果没有瓦片数据（400/500/404），优雅当作空瓦片收尾，绝不卡死
-                        if (!res.ok) return null;
+                        if (!res.ok) return null; // 边缘或海上无切片时优雅避让，拒绝卡死
                         return res.arrayBuffer();
                     })
                     .then(buffer => {
@@ -78,8 +66,7 @@ const App = {
                             done(null, tile);
                             return;
                         }
-                        // 💡 提示：此时 Valhalla 的标准二进制切片流已通过 Go 代理吃进前端 Canvas
-                        // 它会随着地图的拖拽自动动态平铺，在控制台不留任何报错
+                        // 🎯 此时二进制路网瓦片流已无损吃进前端，动态平铺上屏
                         done(null, tile);
                     })
                     .catch(() => {
@@ -87,10 +74,10 @@ const App = {
                     });
 
                 return tile;
-			}
+            }
         });
 
-        // 3. 将修好的纯原生矢量路网层作为最底层直接拍上地图
+        // 3. 将对齐后的矢量底图拍上大屏
         new ValhallaOsmLayer().addTo(this.map);
         console.log("Valhalla 动态矢量路网底座无损绑定成功");
     },
