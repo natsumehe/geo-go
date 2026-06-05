@@ -1,5 +1,5 @@
 /**
- * Geo-Go 指挥中心核心引擎 (MapLibre + PostGIS 原生全矢量咬合版)
+ * Geo-Go 指挥中心核心引擎 (MapLibre 高性能 WebGL 边界锁死修正版)
  */
 const App = {
     map: null,
@@ -8,10 +8,10 @@ const App = {
     scrollTimeout: null,
     id: null,
 
-    // 🎯 精准限定上海的地理外延边界，阻止用户拖拽到无数据盲区
+    // 精准限定上海的地理外延边界，强制阻止用户拖拽到无数据盲区
     shanghaiBounds: [
-        [121.10, 30.90], // 西南角: 青浦、松江南部边缘
-        [121.75, 31.50]  // 东北角: 崇明南部、浦东机场外海边缘
+        [121.10, 30.90], 
+        [121.75, 31.50]  
     ],
 
     getDeviceID() {
@@ -42,26 +42,25 @@ const App = {
     },
 
     initMap() {
-        // 🎯 核心修复：将地图实例赋给 App.map
+        // 🎯 修复 3：统一使用当前对象的 this.map，防止图层生命周期操作在未声明的全局变量上崩溃
         this.map = new maplibregl.Map({
             container: 'map',
-            center: [121.4737, 31.2304],    // 初始中心点：上海市中心
+            center: [121.4737, 31.2304],    
             zoom: 13,                       
-            minZoom: 10,                    // 适当放开到 10 级，保证能看清上海全貌
-            maxZoom: 18,                    
+            minZoom: 10,                    // 放宽最小层级，以便看清边界
+            maxZoom: 17,                    
             maxBounds: this.shanghaiBounds, 
-            pitch: 45,                      // 倾斜视角
-            // 🎯 核心修改：放弃无法吐出 MVT 的 Valhalla 底图，换用公网免费科技暗色标准底图，或者留空全黑背景
+            pitch: 45,                      
+            // 🎯 修复 4：放弃失效的本地 Valhalla 切片作为底色，改用标准公网科技暗色调底图
             style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
         });
 
-        // 🎯 核心生命周期：严格在 load 回调中，使用 this.map 进行注入
         this.map.on('load', () => {
-            console.log("基础底图渲染成功，开始注入 PostGIS 高性能原生业务图层...");
+            console.log("基础底座及样式加载成功，开始注入业务图层...");
             
             const mvtHost = window.location.protocol + '//' + window.location.host;
 
-            // 1. 🔗 注入地理围栏空间矢量瓦片源 (MVT)
+            // 1. 添加地理围栏数据源 (MVT)
             this.map.addSource('fences-mvt-source', {
                 'type': 'vector',
                 'tiles': [
@@ -71,19 +70,19 @@ const App = {
                 'maxzoom': 22
             });
 
-            // 🎨 渲染围栏多边形浅蓝色填充
+            // 2. 渲染围栏填充色
             this.map.addLayer({
                 'id': 'fences-layer-fill',
                 'type': 'fill',
                 'source': 'fences-mvt-source',
-                'source-layer': 'fences', // 对应 Go 中 ST_AsMVT 的图层标识
+                'source-layer': 'fences', 
                 'paint': {
                     'fill-color': '#007cbf',
                     'fill-opacity': 0.18
                 }
             });
 
-            // 🎨 渲染围栏高亮物理边框
+            // 3. 渲染围栏边界轮廓
             this.map.addLayer({
                 'id': 'fences-layer-outline',
                 'type': 'line',
@@ -95,7 +94,7 @@ const App = {
                 }
             });
 
-            // 2. 🔗 初始化动态设备轨迹数据源（供 draw 方法实时操作，避免频繁 rebuild）
+            // 4. 初始化动态轨迹点与线数据源，防止 draw 实时重置时缺失
             this.map.addSource('device-track', {
                 'type': 'geojson',
                 'data': { 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': [] } }
@@ -103,7 +102,7 @@ const App = {
             this.map.addLayer({
                 'id': 'track-layer', 'type': 'line', 'source': 'device-track',
                 'layout': { 'line-join': 'round', 'line-cap': 'round' },
-                'paint': { 'line-color': '#ffea00', 'line-width': 4 } // 亮黄色轨迹
+                'paint': { 'line-color': '#ffea00', 'line-width': 4 }
             });
 
             this.map.addSource('device-pointer', {
@@ -115,11 +114,10 @@ const App = {
                 'paint': { 'circle-radius': 7, 'circle-color': '#ff3333', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' }
             });
 
-            // 💡 提示：原先混乱的 this.loadFences() 已被 MVT 完全平替，在此直接废弃
+            // 💡 提示：原先冲突的旧接口 this.loadFences() 已被 MVT 完美平替，在此安全移除
         });
     },
 
-    // 自动发现活跃设备
     startDiscovery() {
         const refreshList = async () => {
             try {
@@ -201,7 +199,7 @@ const App = {
         if (!coordinates || coordinates.length === 0 || !this.map) return;
         const lastPoint = coordinates[coordinates.length - 1];
 
-        // 🎯 核心修复：严格使用 this.map 保证对数据源的调用安全
+        // 🎯 修复 5：严格基于 this.map 完成 WebGL 动态渲染数据更新
         const trackSource = this.map.getSource('device-track');
         if (trackSource) {
             trackSource.setData({

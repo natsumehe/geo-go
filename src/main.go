@@ -40,13 +40,13 @@ type DeviceFilters struct {
 
 var kfStore = sync.Map{}
 
-// 🎯 核心修正 1：放开 WebSocket 跨域，并增加读写锁保障高并发下的并发安全
+// 🎯 修复 1：WebSocket 放开跨域，并引入互斥锁，彻底断绝高并发下的崩溃隐患
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 var (
 	clients   = make(map[*websocket.Conn]bool)
-	clientsMu sync.RWMutex // 用于保护 clients 映射表的互斥锁
+	clientsMu sync.RWMutex
 )
 
 func WsHandler(w http.ResponseWriter, r *http.Request) {
@@ -55,7 +55,6 @@ func WsHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf(" [❌ WS 升级失败]: %v", err)
 		return
 	}
-
 	clientsMu.Lock()
 	clients[conn] = true
 	clientsMu.Unlock()
@@ -79,7 +78,6 @@ func WsHandler(w http.ResponseWriter, r *http.Request) {
 func notifyClients(msg string) {
 	clientsMu.RLock()
 	defer clientsMu.RUnlock()
-	// 高并发下，必须遍历安全的镜像或及时清理失效长连接
 	for client := range clients {
 		go func(c *websocket.Conn) {
 			err := c.WriteMessage(websocket.TextMessage, []byte(msg))
@@ -108,7 +106,6 @@ func HaversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
 
 func checkFence(driverID string, lng, lat float64) {
 	var fenceName string
-	// 原生 4326 碰撞检测
 	fenceQuery := `
                 SELECT name FROM fences 
                 WHERE ST_Contains(area, ST_SetSRID(ST_MakePoint($1, $2), 4326)) 
@@ -312,7 +309,18 @@ func main() {
 	var err error
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
-		log.Fatalf("❌ 数据库加载失败: %v", err)
+		log.Fatalf("❌ 数据库驱动加载失败: %v", err)
+	}
+
+	// 保留你原本健壮的数据库连接探针
+	for i := 0; i < 5; i++ {
+		err = db.Ping()
+		if err == nil {
+			fmt.Println("✅ 数据库连接成功！")
+			break
+		}
+		fmt.Printf("⚠️ 数据库连接尝试 (%d/5) 失败: %v，等待重试...\n", i+1, err)
+		time.Sleep(2 * time.Second)
 	}
 
 	http.HandleFunc("/update", UpdateHandle)
@@ -322,7 +330,7 @@ func main() {
 	http.HandleFunc("/fences", FencesHandle)
 	http.HandleFunc("/ws", WsHandler)
 
-	// 🎯 核心修正 2：重写高性能、索引友好型动态 MVT 空间切片服务
+	// 🎯 修复 2：重写高性能、索引友好型 MVT 原生矢量切片（解决原底图拉取问题）
 	http.HandleFunc("/tiles/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
@@ -350,7 +358,6 @@ func main() {
 		var mvtQuery string
 		switch layerName {
 		case "fences":
-			// 🚀 性能优化：将瓦片信封转换为 4326 后与原始 area 进行相交，完美激活数据库的 GIST 空间索引
 			mvtQuery = `
 				WITH tilegeom AS (
 					SELECT id, name, ST_AsMVTGeom(ST_Transform(area, 3857), ST_TileEnvelope($1, $2, $3), 4096, 64, true) AS geom
@@ -374,7 +381,7 @@ func main() {
 		var tileData []byte
 		err := db.QueryRow(mvtQuery, z, x, y).Scan(&tileData)
 		if err != nil || len(tileData) == 0 {
-			w.WriteHeader(http.StatusNoContent) // 无数据直接返回 204
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
@@ -382,9 +389,22 @@ func main() {
 		_, _ = w.Write(tileData)
 	})
 
-	staticDir := "./static"
+	// 🎯 保留你原汁原味的容器绝对路径双重探针
+	staticDir := "/app/static"
+	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
+		staticDir = "./static"
+	}
 	http.Handle("/", http.FileServer(http.Dir(staticDir)))
 
-	log.Println("🚀 后端服务在 :8080 端口无损启动...")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	// 🎯 保留你原汁原味的 8080 与 443(TLS) 并行监听机制
+	go func() {
+		fmt.Println("🔓 HTTP 备用服务启动: 8080")
+		_ = http.ListenAndServe(":8080", nil)
+	}()
+
+	fmt.Println("🔒 HTTPS 安全服务准备启动: 443")
+	err = http.ListenAndServeTLS(":443", "/ssl/cert.pem", "/ssl/cert.key", nil)
+	if err != nil {
+		log.Fatalf("❌ HTTPS 启动失败 (请检查 /ssl 路径与证书): %v", err)
+	}
 }
