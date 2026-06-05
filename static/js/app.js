@@ -38,40 +38,36 @@ const App = {
         this.loadFences();
         console.log("Radar System Initialized.");
     },
-
     initMap() {
-        // 1. 初始化纯黑科技底图画布
+        // 1. 初始化底图，将层级稍微拉近一点，定位在上海人民广场核心区
         this.map = L.map('map', { 
             attributionControl: false, 
             zoomControl: false,
             preferCanvas: true 
-        }).setView([31.235, 121.485], 13);
+        }).setView([31.2304, 121.4737], 12); // 🎯 先用 12 层或 11 层看能不能撞出你下载的数据边界
 
-        // 2. 🎯 【坐标系与路径对齐】声明扩展的原生矢量层
         const ValhallaOsmLayer = L.TileLayer.extend({
             createTile: function(coords, done) {
                 const tile = document.createElement('canvas');
                 tile.width = tile.height = 256;
 
-                // 🎯 核心修正 1：将 Leaflet 的 XYZ 坐标系的 Y 轴，翻转为 Valhalla 认的 TMS 坐标系 Y 轴
                 const tmsY = Math.pow(2, coords.z) - 1 - coords.y;
-
-                // 🎯 核心修正 2：改用 Valhalla 最严谨、绝不报错的路径传参姿势
-                // 格式：/valhalla/tile/{layers}/{z}/{x}/{y}.mvt，这里 layers 我们填 0（代表基本路网层）
                 const requestUrl = `/valhalla/tile/0/${coords.z}/${coords.x}/${tmsY}.mvt`;
 
                 fetch(requestUrl)
                     .then(res => {
-                        // 如果遇到边缘无切片区域，返回空瓦片，绝不让控制台爆红
-                        if (!res.ok) return null; 
+                        // 🎯 核心修正：如果是 404，说明这块地方没有 OSM 路网（比如绿地、海面），优雅当作空瓦片放行
+                        if (!res.ok) {
+                            done(null, tile);
+                            return null;
+                        }
                         return res.arrayBuffer();
                     })
                     .then(buffer => {
-                        if (!buffer) {
-                            done(null, tile);
-                            return;
-                        }
-                        // 🎯 此时二进制流无损解析完毕，准备渲染
+                        if (!buffer) return;
+                        
+                        // TODO: 如果需要用 Canvas 手动解码 MVT 绘图，在这里编写 ctx 逻辑
+                        // 如果只是把物理数据通路调通，此时 200 OK 的数据已经无损躺在 buffer 里了
                         done(null, tile);
                     })
                     .catch(() => {
@@ -82,7 +78,6 @@ const App = {
             }
         });
 
-        // 3. 将完全对齐的矢量底图拍上大屏
         new ValhallaOsmLayer().addTo(this.map);
         console.log("Valhalla 动态矢量路网底座无损绑定成功");
     },
