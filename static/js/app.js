@@ -39,14 +39,10 @@ const App = {
         console.log("Radar System Initialized.");
     },
    initMap() {
-        // 1. 🎯 【重设准星】精准定位到上海人民广场核心区 [31.2304, 121.4737]
-        // 并且强制限定缩放层级在 14-16 层（大屏路网最饱满的层级）
         this.map = L.map('map', { 
             attributionControl: false, 
             zoomControl: false,
-            preferCanvas: true,
-            minZoom: 12,
-            maxZoom: 16
+            preferCanvas: true 
         }).setView([31.2304, 121.4737], 14); 
 
         const ValhallaOsmLayer = L.TileLayer.extend({
@@ -54,12 +50,15 @@ const App = {
                 const tile = document.createElement('canvas');
                 tile.width = tile.height = 256;
 
+                // 1. 🎯 保持 Y 轴 TMS 转换
                 const tmsY = Math.pow(2, coords.z) - 1 - coords.y;
-                const requestUrl = `/valhalla/tile/0/${coords.z}/${coords.x}/${tmsY}.mvt`;
+
+                // 2. 🎯 【核心对齐】放弃伪静态路径，严格对齐官方 Loki 路由参数规范
+                // 必须通过 ? 传参，且不能加 .mvt 后缀
+                const requestUrl = `/valhalla/tile?layer=0&z=${coords.z}&x=${coords.x}&y=${tmsY}`;
 
                 fetch(requestUrl)
                     .then(res => {
-                        // 🎯 优雅放行：如果是 404（边缘无路网区），优雅当作空瓦片放行，绝不爆红
                         if (!res.ok) {
                             done(null, tile);
                             return null;
@@ -68,10 +67,7 @@ const App = {
                     })
                     .then(buffer => {
                         if (!buffer) return;
-                        
-                        // 🎯 200 OK 的上海核心路网二进制流已经成功躺在这里
-                        console.log(`%c 🎯 成功捕获上海核心路网切片: ${coords.z}/${coords.x}/${tmsY}`, "color: #00f2ff");
-                        
+                        console.log(`%c 🎯 Valhalla 握手成功! 成功捕获切片: ${coords.z}/${coords.x}/${tmsY}`, "color: #00f2ff");
                         done(null, tile);
                     })
                     .catch(() => {
