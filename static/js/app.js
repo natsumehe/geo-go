@@ -53,25 +53,32 @@ const App = {
         renderer: L.canvas() 
     }).setView([31.235, 121.485], 14);
 
-    // 2. 【核心校正】使用矢量数据层，让 Leaflet 自己去调后端代理获取路网线条
-    // 这种形式下，前端拿到的全部是真实的道路线段地理坐标，可以在前端任意调整发光、粗细
-    L.tileLayer.canvasVector = L.TileLayer.extend({
+    // 2. 声明并纠正作用域断层
+    L.TileLayer.CanvasVector = L.TileLayer.extend({
         createTile: function(coords, done) {
             const tile = document.createElement('canvas');
             tile.width = tile.height = 256;
             
+            // 🎯 【核心修正】通过 this._map 拿到 Leaflet 注入给当前图层的真实地图实例
+            const currentMap = this._map; 
+            if (!currentMap) {
+                done(null, tile);
+                return tile;
+            }
+
             // 计算当前切片在上海路网中的真实边界 (Bounding Box)
             const size = this.getTileSize();
             const nwPoint = coords.scaleBy(size);
             const sePoint = nwPoint.add(size);
-            const nw = map.unproject(nwPoint, coords.z);
-            const se = map.unproject(sePoint, coords.z);
+            
+            // 🎯 使用 currentMap 替换原本报错的 map
+            const nw = currentMap.unproject(nwPoint, coords.z);
+            const se = currentMap.unproject(sePoint, coords.z);
 
             // 自动向 Go 后端代理要这一块区域的矢量路网属性 (不走图片)
             fetch(`/valhalla/locate?json={"lat":${nw.lat},"lon":${nw.lng},"road_classify":true}`)
                 .then(res => res.json())
                 .then(data => {
-                    // 在 Canvas 上直接把路网线条画出来，达到“四年线路”的极客效果
                     const ctx = tile.getContext('2d');
                     ctx.strokeStyle = '#005577'; // 你的暗夜科技蓝线条
                     ctx.lineWidth = 1.5;
@@ -82,8 +89,8 @@ const App = {
                             const latlngs = decodeValhallaPolyline6(edge.shape);
                             ctx.beginPath();
                             latlngs.forEach((pt, index) => {
-                                // 坐标转换并在 Canvas 瓦片内连线
-                                const p = map.project(pt, coords.z)._subtract(nwPoint);
+                                // 🎯 坐标转换时也统一用 currentMap
+                                const p = currentMap.project(pt, coords.z)._subtract(nwPoint);
                                 if (index === 0) ctx.moveTo(p.x, p.y);
                                 else ctx.lineTo(p.x, p.y);
                             });
@@ -97,9 +104,9 @@ const App = {
         }
     });
 
-    // 拉起我们自定义的纯矢量路网底图
-    new L.tileLayer.canvasVector().addTo(this.map);
-    console.log("Valhalla 动态矢量路网底座加载成功");
+    // 3. 拉起我们自定义的纯矢量路网底图
+    new L.TileLayer.CanvasVector().addTo(this.map);
+    console.log("Valhalla 动态矢量路网底座无损绑定成功");
 },
     // 自动发现活跃设备
     startDiscovery() {
