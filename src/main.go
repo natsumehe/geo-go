@@ -377,7 +377,7 @@ func FencesHandle(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	// 1. 环境变量读取（数据库在宿主机 172.17.0.1）
+	// 1. 环境变量读取（保持你原有的逻辑不变）
 	connStr := os.Getenv("DB_URL")
 	if connStr == "" {
 		connStr = "postgres://docker:floder123@172.17.0.1:5432/gis_db?sslmode=disable"
@@ -390,7 +390,7 @@ func main() {
 	fmt.Printf("[DEBUG] 尝试连接数据库地址: %s\n", connStr)
 	fmt.Printf("[DEBUG] 尝试连接 Redis 地址: %s\n", redisAddr)
 
-	// 2. 初始化连接
+	// 2. 初始化连接与重试逻辑
 	rdb = redis.NewClient(&redis.Options{Addr: redisAddr})
 
 	var err error
@@ -399,7 +399,6 @@ func main() {
 		log.Fatalf("❌ 数据库驱动加载失败: %v", err)
 	}
 
-	// 检查数据库连通性（增加重试逻辑）
 	for i := 0; i < 5; i++ {
 		err = db.Ping()
 		if err == nil {
@@ -410,61 +409,71 @@ func main() {
 		time.Sleep(2 * time.Second)
 	}
 
-	// 3. 路由与静态文件
+	// 3. 基础业务路由注册
 	http.HandleFunc("/update", UpdateHandle)
 	http.HandleFunc("/history", HistoryHandle)
 	http.HandleFunc("/alarms", AlarmsHandle)
 	http.HandleFunc("/list", ListHandle)
 	http.HandleFunc("/fences", FencesHandle)
 
-	// 【新增】将前端的所有矢量渲染请求，透明转发给内网 8002 端口的 Valhalla
+	// 4. 🎯 【精准合并优化】完美支持 MVT 矢量路网的高性能反向代理通道
 	http.HandleFunc("/valhalla/", func(w http.ResponseWriter, r *http.Request) {
+		// 显式允许前端跨域（包含 MVT 二进制流和复杂 JSON 请求）
 		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 
-		// 替换请求路径，直接打向 Docker 内网的 Valhalla 容器
+		// 拦截并秒回浏览器的 CORS 预检请求，防止 MVT 瓦片被跨域拦截
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// 替换请求路径，精准无损送往内网的 Valhalla 容器
 		targetPath := strings.TrimPrefix(r.URL.Path, "/valhalla")
 		targetURL := fmt.Sprintf("%s%s", valhallaURL, targetPath)
 		if r.URL.RawQuery != "" {
 			targetURL = fmt.Sprintf("%s?%s", targetURL, r.URL.RawQuery)
 		}
 
-		// 利用 Go 官方的标准代理器进行透明传输，内存消耗接近 0
 		proxyReq, _ := http.NewRequest(r.Method, targetURL, r.Body)
 		proxyReq.Header = r.Header
+
 		resp, err := http.DefaultClient.Do(proxyReq)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			http.Error(w, fmt.Sprintf("Valhalla 通信故障: %v", err), http.StatusBadGateway)
 			return
 		}
 		defer resp.Body.Close()
 
-		// 将 Valhalla 的响应透传给前端 Leaflet
+		// 核心：无损透传所有 Header（包含关键的 Content-Type: application/x-protobuf）
 		for k, vv := range resp.Header {
 			for _, v := range vv {
 				w.Header().Add(k, v)
 			}
 		}
 		w.WriteHeader(resp.StatusCode)
+
+		// 流式内存零拷贝转发二进制矢量数据
 		io.Copy(w, resp.Body)
 	})
 
-	// 自动适配容器与本地路径
+	// 5. 自动适配容器与本地路径
 	staticDir := "/app/static"
 	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
 		staticDir = "./static"
 	}
 	http.Handle("/", http.FileServer(http.Dir(staticDir)))
 
-	// 4. 启动双协议服务
+	// 6. 启动双协议服务 (对齐你的绝对路径)
 	go func() {
 		fmt.Println("🔓 HTTP 备用服务启动: 8080")
 		_ = http.ListenAndServe(":8080", nil)
 	}()
 
 	fmt.Println("🔒 HTTPS 安全服务准备启动: 443")
-	// 这里的 server.crt/key 必须在运行目录下（/app/server.crt）
 	err = http.ListenAndServeTLS(":443", "/ssl/cert.pem", "/ssl/cert.key", nil)
 	if err != nil {
-		log.Fatalf("❌ HTTPS 启动失败 (请检查证书是否在根目录): %v", err)
+		log.Fatalf("❌ HTTPS 启动失败 (请检查 /ssl 绝对路径与证书链): %v", err)
 	}
 }
