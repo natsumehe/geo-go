@@ -54,11 +54,9 @@ const App = {
     }).setView([31.235, 121.485], 14);
 
     // 2. 【严格修复】使用标准单引号字符串，切勿使用反引号
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 18,
         minZoom: 10,
-        subdomains: 'abcd',
-        r: '@2x' // 高清屏适配，如果不需要可以删去此行及 URL 中的 {r}
     }).addTo(this.map);
 
     console.log("OSM 纯净暗黑路网底图载入成功");
