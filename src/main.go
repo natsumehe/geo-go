@@ -40,7 +40,6 @@ type DeviceFilters struct {
 
 var kfStore = sync.Map{}
 
-// 🎯 WebSocket 配置与读写锁控制，杜绝高并发下由于 map 并发读写导致的 fatal error 崩溃
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
@@ -195,6 +194,7 @@ func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "OK: %s Location Filtered", id)
 }
 
+// 🎯 核心逻辑保留：这里会从 driver_history 数据库中，把特定司机的点集转化为标准前端可解析的 LineString GeoJSON
 func HistoryHandle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	id := r.URL.Query().Get("id")
@@ -328,7 +328,7 @@ func main() {
 	http.HandleFunc("/fences", FencesHandle)
 	http.HandleFunc("/ws", WsHandler)
 
-	// 🎯 高性能 MVT 空间切片服务：重写过滤规则，完美匹配 PostGIS 空间索引 GIST，拒绝底图拉取问题
+	// 🎯 围栏继续使用 MVT 高效渲染切片，完美适配空间大屏
 	http.HandleFunc("/tiles/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
@@ -363,14 +363,6 @@ func main() {
 					WHERE area && ST_Transform(ST_TileEnvelope($1, $2, $3), 4326)
 				)
 				SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
-		case "history":
-			mvtQuery = `
-				WITH tilegeom AS (
-					SELECT name, ST_AsMVTGeom(ST_Transform(location, 3857), ST_TileEnvelope($1, $2, $3), 4096, 64, true) AS geom
-					FROM driver_history
-					WHERE location && ST_Transform(ST_TileEnvelope($1, $2, $3), 4326)
-				)
-				SELECT ST_AsMVT(tilegeom.*, 'history') FROM tilegeom;`
 		default:
 			http.Error(w, "Layer not found", http.StatusNotFound)
 			return

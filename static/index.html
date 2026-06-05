@@ -12,11 +12,13 @@
             position: absolute; top: 20px; left: 20px; z-index: 10;
             background: rgba(255, 255, 255, 0.95); padding: 15px;
             border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            max-width: 320px;
+            width: 280px;
         }
         h3 { margin-top: 0; color: #333; border-bottom: 2px solid #007cbf; padding-bottom: 5px; }
         .log-item { font-size: 12px; margin-bottom: 6px; padding: 6px; background: #f5f5f5; border-left: 3px solid #ff3333; border-radius: 2px; }
-        #alarm-logs { max-height: 200px; overflow-y: auto; margin-top: 10px; }
+        #alarm-logs { max-height: 150px; overflow-y: auto; margin-top: 10px; }
+        .device-slide { padding: 6px; background: #f0f4f8; margin-top: 4px; border-radius: 4px; font-size: 12px; cursor: pointer; }
+        .device-slide.active { background: #007cbf; color: white; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -24,16 +26,20 @@
 <div id="panel">
     <h3>实时状态监控</h3>
     <div id="status">系统初始化中...</div>
+    
+    <div style="margin-top: 10px; font-weight: bold; font-size: 13px; color: #555;">🚗 活跃车辆发现 (点击追踪)</div>
+    <div id="device-list" style="max-height: 100px; overflow-y: auto; margin-bottom: 10px;"></div>
+
     <div id="alarm-logs"></div>
 </div>
 
 <div id="map"></div>
 
 <script>
-    // 1. 严格定义全局变量
     let map = null;
+    let currentDeviceID = null;
+    let pollTimer = null;
 
-    // 2. 🎯 核心修正：使用严格区分大小写的全局变量 maplibregl
     map = new maplibregl.Map({
         container: 'map',
         style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
@@ -41,77 +47,106 @@
         zoom: 11
     });
 
-    // 3. 核心生命周期处理
     map.on('load', () => {
-        console.log("MapLibre 样式加载完毕，开始安全注入 PostGIS 动态 MVT 图层...");
-        document.getElementById('status').innerText = "地图加载完毕，正在连接网格数据...";
+        console.log("MapLibre 加载完毕...");
+        document.getElementById('status').innerText = "地图及围栏就绪，正在追踪数据...";
 
         const mvtHost = window.location.protocol + '//' + window.location.host;
 
-        // 🔗 注入地理围栏空间矢量瓦片源
+        // 1. 🔗 矢量切片加载高并发围栏 (MVT)
         map.addSource('fences-mvt-source', {
             'type': 'vector',
-            'tiles': [
-                mvtHost + '/tiles/fences/{z}/{x}/{y}.mvt'
-            ],
-            'minzoom': 0,
-            'maxzoom': 22
+            'tiles': [ mvtHost + '/tiles/fences/{z}/{x}/{y}.mvt' ]
         });
-
-        // 🎨 渲染围栏多边形颜色
         map.addLayer({
-            'id': 'fences-layer-fill',
-            'type': 'fill',
-            'source': 'fences-mvt-source',
-            'source-layer': 'fences', 
-            'paint': {
-                'fill-color': '#007cbf',
-                'fill-opacity': 0.15
-            }
+            'id': 'fences-layer-fill', 'type': 'fill', 'source': 'fences-mvt-source', 'source-layer': 'fences',
+            'paint': { 'fill-color': '#007cbf', 'fill-opacity': 0.15 }
         });
-
-        // 🎨 渲染围栏高亮物理边框
         map.addLayer({
-            'id': 'fences-layer-outline',
-            'type': 'line',
-            'source': 'fences-mvt-source',
-            'source-layer': 'fences',
-            'paint': {
-                'line-color': '#007cbf',
-                'line-width': 2
-            }
+            'id': 'fences-layer-outline', 'type': 'line', 'source': 'fences-mvt-source', 'source-layer': 'fences',
+            'paint': { 'line-color': '#007cbf', 'line-width': 2 }
         });
 
-        // 🔗 注入车辆历史轨迹动态矢量瓦片源
-        map.addSource('history-mvt-source', {
-            'type': 'vector',
-            'tiles': [
-                mvtHost + '/tiles/history/{z}/{x}/{y}.mvt'
-            ],
-            'minzoom': 0,
-            'maxzoom': 22
+        // 2. 🎯 重新锁死你的全量 GeoJSON 动态轨迹数据源 (精准匹配你的单兵数据库读取需求)
+        map.addSource('device-track-source', {
+            'type': 'geojson',
+            'data': { 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': [] } }
         });
-
-        // 🎨 渲染轨迹热力线段
         map.addLayer({
-            'id': 'history-layer-line',
-            'type': 'line',
-            'source': 'history-mvt-source',
-            'source-layer': 'history',
-            'layout': {
-                'line-join': 'round',
-                'line-cap': 'round'
-            },
-            'paint': {
-                'line-color': '#ff5500',
-                'line-width': 3,
-                'line-opacity': 0.8
-            }
+            'id': 'track-layer', 'type': 'line', 'source': 'device-track-source',
+            'layout': { 'line-join': 'round', 'line-cap': 'round' },
+            'paint': { 'line-color': '#ff5500', 'line-width': 4 }
         });
 
-        // 4. 建立 WebSocket 实时报警链路
+        // 3. 开启设备自动发现机制并建立 WebSocket
+        startDiscovery();
         initWebSocket();
     });
+
+    // 🔄 自动从后端 /list 获取上报过的司机
+    async function startDiscovery() {
+        const refresh = async () => {
+            try {
+                const res = await fetch('/list');
+                const devices = await res.json();
+                const container = document.getElementById('device-list');
+                if(!container) return;
+                
+                if(!devices || devices.length === 0) {
+                    container.innerHTML = '<div style="font-size:12px; color:#999;">暂无轨迹数据</div>';
+                    return;
+                }
+
+                container.innerHTML = devices.map(id => `
+                    <div class="device-slide ${id === currentDeviceID ? 'active' : ''}" onclick="selectDevice('${id}')">
+                        🆔 司机: ${id}
+                    </div>
+                `).join('');
+
+                // 默认选择第一个发现的司机进行追踪
+                if (!currentDeviceID && devices.length > 0) {
+                    selectDevice(devices[0]);
+                }
+            } catch (e) { console.error(e); }
+        };
+        refresh();
+        setInterval(refresh, 5000);
+    }
+
+    // 🎯 选定特定司机，死锁轮询其在 driver_history 中的实时轨迹
+    function selectDevice(id) {
+        currentDeviceID = id;
+        document.querySelectorAll('.device-slide').forEach(el => {
+            el.classList.toggle('active', el.innerText.includes(id));
+        });
+
+        if (pollTimer) clearInterval(pollTimer);
+        const fetchTrack = async () => {
+            try {
+                const res = await fetch(`/history?id=${encodeURIComponent(id)}`);
+                const data = await res.json();
+                
+                // 确保后端有返回坐标点串
+                if (data && data.coordinates && data.coordinates.length > 0) {
+                    const coords = data.coordinates;
+                    
+                    // 刷新地图图层数据
+                    const source = map.getSource('device-track-source');
+                    if (source) {
+                        source.setData({
+                            'type': 'Feature',
+                            'geometry': { 'type': 'LineString', 'coordinates': coords }
+                        });
+                    }
+                    // 自动把地图核心平移到司机最新上报的轨迹终点上
+                    map.easeTo({ center: coords[coords.length - 1], duration: 500 });
+                }
+            } catch (e) { console.error("读取历史轨迹崩溃:", e); }
+        };
+        
+        fetchTrack();
+        pollTimer = setInterval(fetchTrack, 3000);
+    }
 
     function initWebSocket() {
         const wsProtocol = window.location.protocol === "https:" ? "wss://" : "ws://";
@@ -132,9 +167,7 @@
                     item.innerHTML = `<strong>🚨 闯区报警</strong><br>对象: ${data.driver}<br>围栏: ${data.fence}`;
                     logContainer.insertBefore(item, logContainer.firstChild);
                 }
-            } catch (e) {
-                console.log("收到原始消息:", event.data);
-            }
+            } catch (e) { console.log(event.data); }
         };
 
         ws.onclose = () => {
