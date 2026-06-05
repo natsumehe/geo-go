@@ -32,9 +32,8 @@ services:
     restart: always
     ports:
       - "8002:8002"
+    # 🎯 【全新注入核心】指定启动命令，让它带着配置文件常驻前台
+    command: ["valhalla_service", "/valhalla.json", "1"]
     volumes:
-      # 1. 🎯 挂载宿主机根目录下的 valhalla.json 配置文件
       - /root/valhalla-server/valhalla.json:/valhalla.json:ro
-      # 2. 🎯 挂载你刚才ls看到的 custom_tiles 上海路网矢量切片目录
-      # 冒号后面严格对齐容器内部去读取的 /custom_tiles 物理目录
       - /root/valhalla-server/custom_tiles:/custom_tiles
