@@ -463,7 +463,7 @@ func main() {
 
 	fmt.Println("🔒 HTTPS 安全服务准备启动: 443")
 	// 这里的 server.crt/key 必须在运行目录下（/app/server.crt）
-	err = http.ListenAndServeTLS(":443", "server.crt", "server.key", nil)
+	err = http.ListenAndServeTLS(":443", "ssl/cert.pem", "ssl/cert.key", nil)
 	if err != nil {
 		log.Fatalf("❌ HTTPS 启动失败 (请检查证书是否在根目录): %v", err)
 	}
