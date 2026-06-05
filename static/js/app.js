@@ -57,8 +57,9 @@ const App = {
             console.log("WebGL 空间总线就绪，加载切片源...");
             document.getElementById('status').innerText = "底图及高性能路网就绪，正在追踪数据...";
             
-            // 🎯 安全策略：MVT 切片请求强制通过 8080 无加密 HTTP 端口，彻底解决 TLS 握手造成的 EOF 阻塞问题
-            const mvtHost = 'http://' + window.location.hostname + ':8080';
+            // 🎯 修复方案：动态适配当前环境的协议和端口。
+            // 既然使用的是阿里云合规证书，瓦片通道必须走相同的 HTTPS 加密链路，防止浏览器拦截 Mixed Content。
+            const mvtHost = window.location.protocol + '//' + window.location.host;
 
             // 1. 🔗 空间切片叠加：业务地理围栏 (MVT)
             this.map.addSource('fences-mvt-source', {
