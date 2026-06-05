@@ -40,7 +40,7 @@ type DeviceFilters struct {
 
 var kfStore = sync.Map{}
 
-// 🎯 修复 1：WebSocket 放开跨域，并引入互斥锁，彻底断绝高并发下的崩溃隐患
+// 🎯 WebSocket 配置与读写锁控制，杜绝高并发下由于 map 并发读写导致的 fatal error 崩溃
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
@@ -59,7 +59,6 @@ func WsHandler(w http.ResponseWriter, r *http.Request) {
 	clients[conn] = true
 	clientsMu.Unlock()
 
-	// 保持连接，读取客户端心跳，断开时自动安全注销
 	go func(c *websocket.Conn) {
 		defer func() {
 			c.Close()
@@ -312,7 +311,6 @@ func main() {
 		log.Fatalf("❌ 数据库驱动加载失败: %v", err)
 	}
 
-	// 保留你原本健壮的数据库连接探针
 	for i := 0; i < 5; i++ {
 		err = db.Ping()
 		if err == nil {
@@ -330,7 +328,7 @@ func main() {
 	http.HandleFunc("/fences", FencesHandle)
 	http.HandleFunc("/ws", WsHandler)
 
-	// 🎯 修复 2：重写高性能、索引友好型 MVT 原生矢量切片（解决原底图拉取问题）
+	// 🎯 高性能 MVT 空间切片服务：重写过滤规则，完美匹配 PostGIS 空间索引 GIST，拒绝底图拉取问题
 	http.HandleFunc("/tiles/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
@@ -389,14 +387,12 @@ func main() {
 		_, _ = w.Write(tileData)
 	})
 
-	// 🎯 保留你原汁原味的容器绝对路径双重探针
 	staticDir := "/app/static"
 	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
 		staticDir = "./static"
 	}
 	http.Handle("/", http.FileServer(http.Dir(staticDir)))
 
-	// 🎯 保留你原汁原味的 8080 与 443(TLS) 并行监听机制
 	go func() {
 		fmt.Println("🔓 HTTP 备用服务启动: 8080")
 		_ = http.ListenAndServe(":8080", nil)

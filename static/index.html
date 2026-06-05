@@ -30,19 +30,18 @@
 <div id="map"></div>
 
 <script>
-    // 1. 🎯 严格定义全局变量，防止作用域被意外覆盖
+    // 1. 严格定义全局变量
     let map = null;
 
-    // 2. 初始化地图底图
-    map = new maplibreGl.Map({
+    // 2. 🎯 核心修正：使用严格区分大小写的全局变量 maplibregl
+    map = new maplibregl.Map({
         container: 'map',
-        // 使用公开的基础底图样式（你可以替换为你本地的样式 JSON）
         style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
-        center: [121.4737, 31.2304], // 定位在上海核心区
+        center: [121.4737, 31.2304], 
         zoom: 11
     });
 
-    // 3. 🎯 核心生命周期：必须保证所有图层和数据源操作都在 'load' 事件回调函数内部执行！
+    // 3. 核心生命周期处理
     map.on('load', () => {
         console.log("MapLibre 样式加载完毕，开始安全注入 PostGIS 动态 MVT 图层...");
         document.getElementById('status').innerText = "地图加载完毕，正在连接网格数据...";
@@ -64,7 +63,7 @@
             'id': 'fences-layer-fill',
             'type': 'fill',
             'source': 'fences-mvt-source',
-            'source-layer': 'fences', // 对应 Go 里面的明文图层标识
+            'source-layer': 'fences', 
             'paint': {
                 'fill-color': '#007cbf',
                 'fill-opacity': 0.15
