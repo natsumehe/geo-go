@@ -18,8 +18,8 @@ COPY --from=builder /app/geo-server .
 # 拷贝静态文件
 COPY --from=builder /app/static ./static
 # 【新增】必须拷贝证书文件，否则 HTTPS 无法启动
-COPY --from=builder /app/server.crt .
-COPY --from=builder /app/server.key .
+COPY --from=builder /ssl/cert.key .
+COPY --from=builder /ssl/cert.pem .
 
 ENV VALHALLA_URL=http://valhalla-service:8002
 
