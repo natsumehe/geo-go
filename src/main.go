@@ -100,6 +100,7 @@ func checkFence(driverID string, lng, lat float64) {
 			log.Printf(" [❌ 存档失败] %v", insertErr)
 		} else {
 			log.Printf(" [✅ 存档成功] 违规记录已写入数据库")
+			notifyClients(fmt.Sprintf(`{"type":"alarm","driver":"%s","fence":"%s"}`, driverID, fenceName))
 		}
 	}
 }
@@ -260,59 +261,6 @@ func ListHandle(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(ids)
 }
 
-func UpdateLocationHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id := r.URL.Query().Get("id")
-		latStr := r.URL.Query().Get("lat")
-		lngStr := r.URL.Query().Get("lng")
-
-		if id == "" || latStr == "" || lngStr == "" {
-			http.Error(w, "Missing params", 400)
-			return
-		}
-
-		upsertSQL := `
-            INSERT INTO devices (device_id, last_lat, last_lng, last_seen)
-            VALUES ($1, $2, $3, NOW())
-            ON CONFLICT (device_id) 
-            DO UPDATE SET last_lat=$2, last_lng=$3, last_seen=NOW();`
-
-		_, err := db.Exec(upsertSQL, id, latStr, lngStr)
-		if err != nil {
-			fmt.Printf("❌ 更新设备状态失败: %v\n", err)
-		}
-
-		historySQL := `
-            INSERT INTO driver_history (name, location, created_at)
-            VALUES ($1, ST_SetSRID(ST_Point($3, $2), 4326), NOW());`
-
-		db.Exec(historySQL, id, latStr, lngStr)
-
-		w.Write([]byte("Position Synchronized"))
-	}
-}
-
-func ListDevicesHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		rows, err := db.Query("SELECT device_id FROM devices WHERE last_seen > NOW() - INTERVAL '5 minutes'")
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		defer rows.Close()
-
-		var ids []string
-		for rows.Next() {
-			var id string
-			rows.Scan(&id)
-			ids = append(ids, id)
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ids)
-	}
-}
-
 func FencesHandle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
@@ -378,9 +326,10 @@ func main() {
 	http.HandleFunc("/alarms", AlarmsHandle)
 	http.HandleFunc("/list", ListHandle)
 	http.HandleFunc("/fences", FencesHandle)
+	http.HandleFunc("/ws", WsHandler)
 
-	// 4. 🎯 【精准合并优化】拦截 RESTful 风格的瓦片请求，并动态洗成 Valhalla 原生的 Query 参数
-	http.HandleFunc("/valhalla/", func(w http.ResponseWriter, r *http.Type) {
+	// 4. 🎯 【编译修复】拦截 RESTful 瓦片请求，转换为符合 Valhalla 地理网格系统的内部坐标
+	http.HandleFunc("/valhalla/", func(w http.ResponseWriter, r *http.Request) { // 🔍 修复此处 *http.Type 为 *http.Request
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -392,32 +341,25 @@ func main() {
 
 		targetPath := strings.TrimPrefix(r.URL.Path, "/valhalla")
 
-		// 🚀 拦截标准 Web Mercator 瓦片请求，进行坐标系动态换算
+		// 🚀 将标准 Web Mercator 瓦片映射至 Valhalla 内置的 2 级切片网格
 		if strings.HasPrefix(targetPath, "/tile/") {
 			cleanPath := strings.TrimSuffix(targetPath, ".mvt")
 			parts := strings.Split(cleanPath, "/")
 			if len(parts) >= 5 {
-				// 解析前端的标准墨卡托瓦片坐标
 				zElem, _ := strconv.Atoi(parts[2])
 				xElem, _ := strconv.Atoi(parts[3])
 				yElem, _ := strconv.Atoi(parts[4])
 
-				// 1. 将标准墨卡托瓦片 (z/x/y) 逆运算转换为该瓦片中心点的经纬度
-				// 计算公式：经度 = x / 2^z * 360 - 180
+				// 墨卡托逆地理换算
 				n := math.Pi - 2.0*math.Pi*float64(yElem)/math.Pow(2.0, float64(zElem))
 				lat := 180.0 / math.Pi * math.Atan(0.5*(math.Exp(n)-math.Exp(-n)))
 				lng := float64(xElem)/math.Pow(2.0, float64(zElem))*360.0 - 180.0
 
-				// 2. 将经纬度换算为 Valhalla 独有的地理网格网格坐标
-				// Valhalla 内部默认 2 级 (城市街区级别) 的网格大小为 0.25 度
-				// 如果你 build_tiles 时没改过默认配置，层级固定为 2
+				// 换算为 Valhalla 默认 2 级(0.25度间距)瓦片行列号
 				valhallaLevel := 2
-
-				// 计算 Valhalla 体系下的 x 和 y 行列号
 				vX := int(math.Floor((lng + 180.0) / 0.25))
 				vY := int(math.Floor((lat + 90.0) / 0.25))
 
-				// 3. 完美重构为符合 Valhalla Loki 引擎预期的内部坐标
 				targetPath = fmt.Sprintf("/tile?z=%d&x=%d&y=%d", valhallaLevel, vX, vY)
 			}
 		}
