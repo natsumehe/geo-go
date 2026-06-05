@@ -8,33 +8,34 @@ services:
       - "443:443"
       - "8080:8080"
     environment:
-      - DB_URL=postgres://docker:floder123@172.17.0.1:5432/gis_db?sslmode=disable
+      # 🎯 优化：利用 extra_hosts 引入宿主机别名，防止 172.17.0.1 漂移导致连不上 DB
+      - DB_URL=postgres://docker:floder123@host.docker.internal:5432/gis_db?sslmode=disable
       - REDIS_URL=redis:6379
     restart: always
-    # 🎯 3. 确保你的 Go 程序启动前，Redis 和 Valhalla 已经就绪
     depends_on:
       - redis
       - valhalla-service
     volumes:
-      # 🎯 4. 【核心对齐】把宿主机 /ssl 目录下的真证书，挂载进容器的绝对路径中！
-      # 之前你的 Go 报错提示找不到证书，多加这一行物理挂载就彻底根治了
+      # 【物理挂载】SSL 真证书绝对路径穿透
       - /ssl:/ssl:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # 允许 Linux 容器通过该域名直接穿透访问宿主机服务
 
   redis:
     image: redis:7-alpine
     container_name: geo-go-redis-1
     restart: always
 
-  # 🎯 【全新注入】把你在 ~/valhalla-server 里的上海 OSM 资产彻底拉起来
   valhalla-service:
     image: ghcr.io/valhalla/valhalla:latest
     container_name: valhalla-service
     restart: always
     ports:
       - "8002:8002"
-    # 🎯 1. 启动命令同样指向你在 JSON 里配好的路径规范
+    # 🎯 提醒：请检查 valhalla.json 内部的路径配置是否与挂载点完全一致
     entrypoint: ["valhalla_service", "/etc/valhalla/valhalla.json", "1"]
     volumes:
       - /root/valhalla-server/valhalla.json:/etc/valhalla/valhalla.json:ro
-      # 🎯 2. 【核心对齐】将冒号右边改成 /custom_tiles，与你的 JSON 完美闭环！
+      # 🎯 假设你的 JSON 里的 tile_dir 配置为 "/custom_tiles"，此处保持一致。
+      # 如果遇到了权限问题（Permission Denied），可尝试在宿主机执行: chmod -R 777 /root/valhalla-server/custom_tiles
       - /root/valhalla-server/custom_tiles:/custom_tiles

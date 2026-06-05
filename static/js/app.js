@@ -1,11 +1,10 @@
 /**
- * Geo-Go 指挥中心核心引擎 (全量纯净修复版)
+ * Geo-Go 指挥中心核心引擎 (MapLibre 高性能 WebGL 版)
  */
 const App = {
     map: null,
     currentID: null,
     pollTimer: null,
-    layers: { line: null, marker: null },
     scrollTimeout: null,
     id: null,
 
@@ -14,14 +13,12 @@ const App = {
         if (!id) {
             const ua = navigator.userAgent;
             let model = "Unknown_Device";
-            if (/iPhone/.test(ua)) {
-                model = "iPhone";
-            } else if (/Android/.test(ua)) {
+            if (/iPhone/.test(ua)) model = "iPhone";
+            else if (/Android/.test(ua)) {
                 const match = ua.match(/Android [\d._]+; ([^;]+)\)/);
                 model = match ? match[1].replace(/\s+/g, '_') : "Android";
             }
-            const suffix = Math.random().toString(36).slice(2, 6).toUpperCase();
-            id = `${model}_${suffix}`;
+            id = `${model}_${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
             localStorage.setItem('geo_device_id', id);
         }
         return id;
@@ -35,58 +32,72 @@ const App = {
         this.initMap();
         this.startDiscovery();
         this.bindSwiper();
-        this.loadFences();
+        // 围栏加载移入地图 load 事件中
         console.log("Radar System Initialized.");
     },
-   initMap() {
-        this.map = L.map('map', { 
-            attributionControl: false, 
-            zoomControl: false,
-            preferCanvas: true 
-        }).setView([31.2304, 121.4737], 14); 
 
-        const ValhallaOsmLayer = L.TileLayer.extend({
-            createTile: function(coords, done) {
-                const tile = document.createElement('canvas');
-                tile.width = tile.height = 256;
-
-                // 1. 保持 Y 轴 TMS 转换
-                const tmsY = Math.pow(2, coords.z) - 1 - coords.y;
-
-                // 2. 🎯 【终极对齐】对齐 Valhalla 官方原生 Loki 接收器接收的标准 json string 格式
-                const tileJson = JSON.stringify({
-                    layers: [0], // 0 代表基本路网
-                    z: coords.z,
-                    x: coords.x,
-                    y: tmsY
-                });
-
-                // 3. 🎯 直接塞进 json 参数里，这是 Valhalla 全局通用的骨架
-                const requestUrl = `/valhalla/tile?json=${encodeURIComponent(tileJson)}`;
-
-                fetch(requestUrl)
-                    .then(res => {
-                        if (!res.ok) {
-                            done(null, tile);
-                            return null;
+    initMap() {
+        // 初始化 MapLibre WebGL 地图
+        this.map = new maplibregl.Map({
+            container: 'map',
+            center: [121.4737, 31.2304],
+            zoom: 13,
+            pitch: 45, // 倾斜视角，更具指挥中心立体感
+            style: {
+                version: 8,
+                sources: {
+                    // 🎯 完美对接后端的 Valhalla 矢量切片
+                    "valhalla-roads": {
+                        type: "vector",
+                        tiles: [window.location.origin + "/valhalla/tile/{z}/{x}/{y}.mvt"],
+                        minzoom: 0,
+                        maxzoom: 16
+                    }
+                },
+                layers: [
+                    {
+                        "id": "background",
+                        "type": "background",
+                        "paint": { "background-color": "#0b0f19" } // 指挥中心科技暗色调
+                    },
+                    {
+                        "id": "roads-layer",
+                        "type": "line",
+                        "source": "valhalla-roads",
+                        "source-layer": "roads", // 对应 Valhalla 切片内部的图层名称
+                        "paint": {
+                            "line-color": "#1f293d",
+                            "line-width": 1.2
                         }
-                        return res.arrayBuffer();
-                    })
-                    .then(buffer => {
-                        if (!buffer) return;
-                        console.log(`%c 🎯 [200 OK] 成功握手 Valhalla 二进制切片: ${coords.z}/${coords.x}/${tmsY}`, "color: #00f2ff");
-                        done(null, tile);
-                    })
-                    .catch(() => {
-                        done(null, tile);
-                    });
-
-                return tile;
+                    }
+                ]
             }
         });
 
-        new ValhallaOsmLayer().addTo(this.map);
-        console.log("Valhalla 动态矢量路网底座无损绑定成功");
+        this.map.on('load', () => {
+            console.log("Valhalla WebGL 动态矢量路网底座无损绑定成功");
+            
+            // 初始化轨迹动态数据源
+            this.map.addSource('device-track', {
+                type: 'geojson',
+                data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } }
+            });
+            this.map.addLayer({
+                id: 'track-line', type: 'line', source: 'device-track',
+                paint: { 'line-color': '#00f2ff', 'line-width': 4, 'line-opacity': 0.8 }
+            });
+
+            this.map.addSource('device-pointer', {
+                type: 'geojson',
+                data: { type: 'Feature', geometry: { type: 'Point', coordinates: [0,0] } }
+            });
+            this.map.addLayer({
+                id: 'track-point', type: 'circle', source: 'device-pointer',
+                paint: { 'circle-radius': 6, 'circle-color': '#00f2ff', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 }
+            });
+
+            this.loadFences();
+        });
     },
 
     // 自动发现活跃设备
@@ -105,14 +116,11 @@ const App = {
     renderCards(devices) {
         const container = document.getElementById('device-swiper');
         if (!container) return;
-        
         const validDevices = devices.filter(d => d && d.length > 0);
-        
         if (validDevices.length === 0) {
             container.innerHTML = '<div class="swiper-slide">等待数据库同步...</div>';
             return;
         }
-
         container.innerHTML = validDevices.map(id => `
             <div class="swiper-slide ${id === this.currentID ? 'active' : ''}" data-id="${id}">
                 <div class="slide-tag">已发现设备</div>
@@ -122,7 +130,6 @@ const App = {
         `).join('');
 
         if (!this.currentID && validDevices.length > 0) {
-            console.log("🎯 自动锁定数据库目标:", validDevices[0]);
             this.selectDevice(validDevices[0]);
         }
     },
@@ -140,20 +147,12 @@ const App = {
         const centerX = swiper.getBoundingClientRect().left + swiper.offsetWidth / 2;
         let closest = null;
         let minOffset = Infinity;
-
         document.querySelectorAll('.swiper-slide').forEach(slide => {
             const rect = slide.getBoundingClientRect();
             const offset = Math.abs(centerX - (rect.left + rect.width / 2));
-            if (offset < minOffset) {
-                minOffset = offset;
-                closest = slide;
-            }
+            if (offset < minOffset) { minOffset = offset; closest = slide; }
         });
-
-        if (closest) {
-            const id = closest.getAttribute('data-id');
-            this.selectDevice(id);
-        }
+        if (closest) this.selectDevice(closest.getAttribute('data-id'));
     },
 
     selectDevice(id) {
@@ -162,11 +161,6 @@ const App = {
 
         document.querySelectorAll('.swiper-slide').forEach(s => 
             s.classList.toggle('active', s.getAttribute('data-id') === id));
-
-        // 重置旧图层
-        if (this.layers.line) this.map.removeLayer(this.layers.line);
-        if (this.layers.marker) this.map.removeLayer(this.layers.marker);
-        this.layers.line = null; this.layers.marker = null;
 
         if (this.pollTimer) clearInterval(this.pollTimer);
         const track = () => this.fetchUpdate(id);
@@ -179,7 +173,7 @@ const App = {
             const res = await fetch(`/history?id=${encodeURIComponent(id)}`);
             const data = await res.json();
             if (data.coordinates && data.coordinates.length > 0) {
-                this.draw(id, data.coordinates.slice(-100));
+                this.draw(data.coordinates.slice(-100));
             }
         } catch (e) { console.error("Track error", e); }
     },
@@ -189,57 +183,42 @@ const App = {
             const res = await fetch('/fences');
             const data = await res.json();
             
-            L.geoJSON(data, {
-                style: function() {
-                    return {
-                        color: "#ff3300",
-                        weight: 2,
-                        fillColor: "#ff3300",
-                        fillOpacity: 0.2,
-                        dashArray: '5, 10'
-                    };
-                },
-                onEachFeature: function(feature, layer) {
-                    layer.bindTooltip(feature.properties.name, { sticky: true });
-                }
-            }).addTo(App.map);
-        } catch (e) {
-            console.error("加载围栏失败:", e);
-        }
+            this.map.addSource('fences-src', { type: 'geojson', data: data });
+            this.map.addLayer({
+                id: 'fences-layer', type: 'fill', source: 'fences-src',
+                paint: { 'fill-color': '#ff3300', 'fill-opacity': 0.15 }
+            });
+            this.map.addLayer({
+                id: 'fences-outline', type: 'line', source: 'fences-src',
+                paint: { 'line-color': '#ff3300', 'line-width': 2, 'line-dasharray': [2, 4] }
+            });
+        } catch (e) { console.error("加载围栏失败:", e); }
     },
 
-    draw(id, data) {
-        if (!Array.isArray(data) || data.length === 0) return;
+    draw(coordinates) {
+        if (!coordinates || coordinates.length === 0) return;
+        const lastPoint = coordinates[coordinates.length - 1];
 
-        const latlngs = data.map(coord => [coord[1], coord[0]]);
-        const lastPoint = latlngs[latlngs.length - 1];
-
-        if (!this.layers.line) {
-            this.layers.line = L.polyline(latlngs, { 
-                color: '#00f2ff', 
-                weight: 4, 
-                opacity: 0.8 
-            }).addTo(this.map);
-            
-            this.layers.marker = L.circleMarker(lastPoint, { 
-                radius: 6, color: '#fff', fillColor: '#00f2ff', fillOpacity: 1 
-            }).addTo(this.map);
-
-            this.map.panTo(lastPoint);
-        } else {
-            this.layers.line.setLatLngs(latlngs);
-            if (this.layers.marker) {
-                this.layers.marker.setLatLng(lastPoint);
-            }
+        // WebGL 动态更新数据源，不损耗内存
+        if (this.map.getSource('device-track')) {
+            this.map.getSource('device-track').setData({
+                type: 'Feature',
+                geometry: { type: 'LineString', coordinates: coordinates }
+            });
         }
+        if (this.map.getSource('device-pointer')) {
+            this.map.getSource('device-pointer').setData({
+                type: 'Feature',
+                geometry: { type: 'Point', coordinates: lastPoint }
+            });
+        }
+        this.map.easeTo({ center: lastPoint, duration: 500 });
     }
 };
 
-// 全屏控制
 function toggleFullScreen() {
     if (!document.fullscreenElement) document.documentElement.requestFullscreen();
     else document.exitFullscreen();
 }
 
-// 自动拉起整个大屏
 App.init();
