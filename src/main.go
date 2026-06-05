@@ -327,8 +327,8 @@ func main() {
 	http.HandleFunc("/fences", FencesHandle)
 	http.HandleFunc("/ws", WsHandler)
 
-	// 4. 🎯 【PostGIS 动态矢量瓦片引擎】彻底替代废弃的 Valhalla 换算拦截器
-	// 前端 MapLibre 注册 Source 时，直接请求: https://<your-ip>/tiles/fences/{z}/{x}/{y}.mvt
+	// 4. 🎯 【PostGIS 原生高并发矢量瓦片服务】彻底解耦依赖，替代不可用的第三方镜像
+	// 前端 MapLibre 统一请求格式: /tiles/{layerName}/{z}/{x}/{y}.mvt
 	http.HandleFunc("/tiles/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
@@ -340,25 +340,23 @@ func main() {
 			return
 		}
 
-		// 解析 URL 路径，格式类似: /tiles/{layer}/{z}/{x}/{y}.mvt
 		path := strings.TrimPrefix(r.URL.Path, "/tiles/")
 		path = strings.TrimSuffix(path, ".mvt")
 		parts := strings.Split(path, "/")
 		if len(parts) < 4 {
-			http.Error(w, "Bad Request: Invalid tile format", http.StatusBadRequest)
+			http.Error(w, "Bad Request: Invalid URL parts", http.StatusBadRequest)
 			return
 		}
 
-		layerName := parts[0] // 支持扩展多图层，比如 fences(围栏), history(历史轨迹)
+		layerName := parts[0]
 		z, _ := strconv.Atoi(parts[1])
 		x, _ := strconv.Atoi(parts[2])
 		y, _ := strconv.Atoi(parts[3])
 
-		// 🎯 核心逻辑：利用 PostGIS 内置的 ST_TileEnvelope 和 ST_AsMVT 极其高效地在数据库端完成切片
-		// 3857 是 Web Mercator 投影系统，完全契合 MapLibre 的标准
 		var mvtQuery string
 		switch layerName {
 		case "fences":
+			// 动态切片：围栏表
 			mvtQuery = `
 				WITH tilegeom AS (
 					SELECT id, name, ST_AsMVTGeom(ST_Transform(area, 3857), ST_TileEnvelope($1, $2, $3), 4096, 64, true) AS geom
@@ -367,7 +365,7 @@ func main() {
 				)
 				SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
 		case "history":
-			// 允许前端直接高亮渲染所有司机的实时/历史轨迹图层
+			// 动态切片：轨迹点/线图层
 			mvtQuery = `
 				WITH tilegeom AS (
 					SELECT name, ST_AsMVTGeom(ST_Transform(location, 3857), ST_TileEnvelope($1, $2, $3), 4096, 64, true) AS geom
@@ -383,8 +381,7 @@ func main() {
 		var tileData []byte
 		err := db.QueryRow(mvtQuery, z, x, y).Scan(&tileData)
 		if err != nil {
-			log.Printf(" [❌ 切片失败] Layer: %s, %v", layerName, err)
-			w.WriteHeader(http.StatusNoContent) // 没数据时返回 204
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 

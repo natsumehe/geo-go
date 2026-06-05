@@ -99,37 +99,37 @@ const App = {
         this.map.on('load', () => {
             console.log("Valhalla WebGL 动态矢量路网底座无损绑定成功");
             
-            // 添加地理围栏动态矢量图层
-map.addSource('fences-source', {
+            // 1. 添加地理围栏数据源
+map.addSource('fences-mvt-source', {
     'type': 'vector',
-    // 🎯 直接请求 Go 后端新写的高性能动态切片接口
     'tiles': [
-        'https://' + window.location.host + '/tiles/fences/{z}/{x}/{y}.mvt'
+        // 🎯 动态获取当前域名，直连你的 Go 统一接口
+        window.location.protocol + '//' + window.location.host + '/tiles/fences/{z}/{x}/{y}.mvt'
     ],
     'minzoom': 0,
     'maxzoom': 22
 });
 
-// 为围栏上色渲染
+// 2. 渲染围栏填充色
 map.addLayer({
-    'id': 'fences-layer',
+    'id': 'fences-layer-fill',
     'type': 'fill',
-    'source': 'fences-source',
-    'source-layer': 'fences', // 对应 Go 代码里 ST_AsMVT 的图层名字
+    'source': 'fences-mvt-source',
+    'source-layer': 'fences', // 必须和 Go 中 ST_AsMVT(tilegeom.*, 'fences') 的名字完全对应
     'paint': {
-        'fill-color': '#ff3333',
-        'fill-opacity': 0.25
+        'fill-color': '#007cbf',
+        'fill-opacity': 0.2
     }
 });
 
-// 给围栏加个明显的红边框
+// 3. 渲染围栏边界轮廓
 map.addLayer({
-    'id': 'fences-outline',
+    'id': 'fences-layer-outline',
     'type': 'line',
-    'source': 'fences-source',
+    'source': 'fences-mvt-source',
     'source-layer': 'fences',
     'paint': {
-        'line-color': '#ff3333',
+        'line-color': '#007cbf',
         'line-width': 2
     }
 });
