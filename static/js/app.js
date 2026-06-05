@@ -75,31 +75,42 @@ const App = {
             const nw = currentMap.unproject(nwPoint, coords.z);
             const se = currentMap.unproject(sePoint, coords.z);
 
-            // 自动向 Go 后端代理要这一块区域的矢量路网属性 (不走图片)
-            fetch(`/valhalla/locate?json={"lat":${nw.lat},"lon":${nw.lng},"road_classify":true}`)
-                .then(res => res.json())
-                .then(data => {
-                    const ctx = tile.getContext('2d');
-                    ctx.strokeStyle = '#005577'; // 你的暗夜科技蓝线条
-                    ctx.lineWidth = 1.5;
-                    
-                    if (data.edges) {
-                        data.edges.forEach(edge => {
-                            // 解密线段并利用 canvas 划线
-                            const latlngs = decodeValhallaPolyline6(edge.shape);
-                            ctx.beginPath();
-                            latlngs.forEach((pt, index) => {
-                                // 🎯 坐标转换时也统一用 currentMap
-                                const p = currentMap.project(pt, coords.z)._subtract(nwPoint);
-                                if (index === 0) ctx.moveTo(p.x, p.y);
-                                else ctx.lineTo(p.x, p.y);
-                            });
-                            ctx.stroke();
-                        });
-                    }
-                    done(null, tile);
-                }).catch(() => done(null, tile));
-                
+            // 自动向 Go 后端代理要这一块区域的矢量路网属性
+// 🎯 【核心修正】将 json 里的对象用 [] 包裹，对齐 Valhalla 的 /locate 数组规范
+const locateJson = JSON.stringify([{ lat: nw.lat, lon: nw.lng }]);
+
+fetch(`/valhalla/locate?json=${encodeURIComponent(locateJson)}`)
+    .then(res => {
+        if (!res.ok) throw new Error(`HTTP 错误! 状态码: ${res.status}`);
+        return res.json();
+    })
+    .then(data => {
+        const ctx = tile.getContext('2d');
+        ctx.strokeStyle = '#00f2ff'; // 霓虹蓝，让矢量路网线条极其亮眼
+        ctx.lineWidth = 1.5;
+        
+        // 🎯 【数据结构对齐】/locate 返回的是一个数组，每个点对应一个结果
+        if (Array.isArray(data) && data[0] && data[0].edges) {
+            data[0].edges.forEach(edge => {
+                if (edge.shape) {
+                    // 解密线段并利用 canvas 划线
+                    const latlngs = decodeValhallaPolyline6(edge.shape);
+                    ctx.beginPath();
+                    latlngs.forEach((pt, index) => {
+                        const p = currentMap.project(pt, coords.z)._subtract(nwPoint);
+                        if (index === 0) ctx.moveTo(p.x, p.y);
+                        else ctx.lineTo(p.x, p.y);
+                    });
+                    ctx.stroke();
+                }
+            });
+        }
+        done(null, tile);
+    })
+    .catch(err => {
+        console.warn("Valhalla 矢量瓦片抓取跳过:", err);
+        done(null, tile);
+    });
             return tile;
         }
     });
