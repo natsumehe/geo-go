@@ -435,50 +435,25 @@ func main() {
                 SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
 
 		case "roads":
-			// 🎯 放开限制：允许高速、快速路、主干道、次干道同时下发，确保市区格子不掉空洞
-			filterSQL := "WHERE highway IN ('motorway', 'trunk', 'primary', 'secondary')"
+			// 🎯 降维打击：直接锁死你列出的沈海高速核心线段 osm_id，不再进行任何多余的分类过滤
+			filterSQL := "WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)"
 
-			// 🎯 极简动态拓扑抽稀（Tolerance），根据 Zoom 层级对 3857 的米制单位做降噪
-			var tolerance float64
-			switch {
-			case z <= 11:
-				tolerance = 50.0 // 视角极高时，节点间距小于50米线条合并
-			case z <= 14:
-				tolerance = 10.0 // 中等视角，10米抽稀
-			default:
-				tolerance = 0.0 // 高清层级，保留原始精度
-			}
-
-			// 🎯 完美 3857 碰撞矩阵：因为 way 已经是 3857，取消所有 transform 转换，直接全速对撞 bbox
-			if tolerance > 0.0 {
-				mvtQuery = fmt.Sprintf(`
-                    WITH tilegeom AS (
-                        SELECT osm_id, name, highway, 
-                               ST_AsMVTGeom(
-                                   ST_SimplifyPreserveTopology(way, %f), 
-                                   ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
-                                   4096, 64, true
-                               ) AS geom
-                        FROM planet_osm_line
-                        %s 
-                          AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
-                    )
-                    SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`, tolerance, filterSQL)
-			} else {
-				mvtQuery = fmt.Sprintf(`
-                    WITH tilegeom AS (
-                        SELECT osm_id, name, highway, 
-                               ST_AsMVTGeom(
-                                   way, 
-                                   ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
-                                   4096, 64, true
-                               ) AS geom
-                        FROM planet_osm_line
-                        %s 
-                          AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
-                    )
-                    SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`, filterSQL)
-			}
+			// 🎯 因为数据量极小（只有这几条），彻底放弃降噪（tolerance 设为 0），100% 还原原始物理线段
+			mvtQuery = fmt.Sprintf(`
+        WITH tilegeom AS (
+            SELECT osm_id, 
+                   '沈海高速' AS name, 
+                   'motorway' AS highway, 
+                   ST_AsMVTGeom(
+                       way, 
+                       ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
+                       4096, 64, true
+                   ) AS geom
+            FROM planet_osm_line
+            %s 
+              AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
+        )
+        SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`, filterSQL)
 
 		default:
 			http.Error(w, "Layer not found", http.StatusNotFound)

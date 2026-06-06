@@ -27,7 +27,7 @@ const App = {
     },
 
     init() {
-        // 🎯 纠偏防护：防止 CSS 隐形塌陷导致地图容器不显示
+        // 防止 CSS 隐形塌陷导致地图容器不显示
         const mapEl = document.getElementById('map');
         if (mapEl) {
             mapEl.style.width = '100vw';
@@ -48,19 +48,17 @@ const App = {
     initMap() {
         this.map = new maplibregl.Map({
             container: 'map',
-            // 🎯 精准对焦：江堤路数据中心点上方
-            center: [121.2377, 31.8631],    
-            zoom: 13,                       
-            minZoom: 9, // 🎯 优化：提升最小缩放，防止低层级下与 maxBounds 冲突引发视窗死锁                     
+            // 🎯 精准对焦：调整至沈海高速目标路段上方
+            center: [121.18, 31.22],    
+            zoom: 12,                       
+            minZoom: 9,                                         
             maxZoom: 18,                    
             maxBounds: this.shanghaiBounds, 
             pitch: 0,                      
             
-            // 纯净画布：排除外部底图劫持
             style: {
                 "version": 8,
                 "sources": {},
-                "glyphs": "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
                 "layers": [
                     {
                         "id": "pure-dark-background",
@@ -71,19 +69,18 @@ const App = {
             }
         });
 
-        // 监听渲染引擎本身的错误
         this.map.on('error', (e) => {
             console.error("🚨 [WebGL 引擎异常]：", e.error?.message || e);
         });
 
         this.map.on('load', () => {
-            console.log("🟢 WebGL 空间画布就绪，开始加载本地 MVT 管道...");
-            document.getElementById('status').innerText = "纯净画布就绪，正在读取本地线数据...";
+            console.log("🟢 WebGL 空间画布就绪，开始加载 MVT 管道...");
+            document.getElementById('status').innerText = "纯净画布就绪，正在读取数据...";
             
             const mvtHost = window.location.protocol + '//' + window.location.host;
 
             // ==========================================
-            // 🛰️ 1. 数据源配置：OSM 拓扑路网与地理围栏
+            // 🛰️ 1. 数据源配置：MVT 管道
             // ==========================================
             this.map.addSource('roads-mvt-source', {
                 'type': 'vector',
@@ -98,40 +95,30 @@ const App = {
             });
 
             // ==========================================
-            // 🎨 2. 图层渲染：构建具备视觉层级的底图
+            // 🎨 2. 图层渲染：沈海高速与地理围栏
             // ==========================================
             
-            // 2.1 基础路网线层
-            // 1. 基础道路线层
-this.map.addLayer({
-    'id': 'roads-layer-line', 
-    'type': 'line', 
-    'source': 'roads-mvt-source', 
-    'source-layer': 'roads', // 👈 必须与后端完全相同！
-    'layout': { 
-        'line-join': 'round', 
-        'line-cap': 'round'
-    },
-    'paint': {
-        // 针对放开后的四种道路，赋予明显的颜色分级
-        'line-color': [
-            'match', ['get', 'highway'],
-            'motorway', '#00FFCC',  // 高速：荧光青
-            'trunk', '#00FF88',     // 城市快速路：荧光绿
-            'primary', '#00AA66',   // 主干道：深绿
-            'secondary', '#006644', // 次干道：暗绿
-            '#004422'               // 兜底
-        ],
-        // 适当加粗线宽，防止低层级由于地图分辨率大导致线条隐形
-        'line-width': [
-            'interpolate', ['linear'], ['zoom'], 
-            9, 2.0,
-            14, 5.0,
-            18, 9.0
-        ],
-        'line-opacity': 1.0 // 彻底放弃透明度隐藏，100%全透显现
-    }
-});
+            // 2.1 核心路网线层（面向特规过滤后的沈海高速）
+            this.map.addLayer({
+                'id': 'roads-layer-line', 
+                'type': 'line', 
+                'source': 'roads-mvt-source', 
+                'source-layer': 'roads', // 严格对齐后端 ST_AsMVT 中的图层标识
+                'layout': { 
+                    'line-join': 'round', 
+                    'line-cap': 'round'
+                },
+                'paint': {
+                    'line-color': '#00FFCC', // 荧光青色，确保暗色底图下绝对可见
+                    'line-width': [
+                        'interpolate', ['linear'], ['zoom'], 
+                        9, 3.0,
+                        14, 6.0,
+                        18, 10.0
+                    ],
+                    'line-opacity': 1.0 // 全透明度显现
+                }
+            });
 
             // 2.2 道路名称文本标注层
             this.map.addLayer({
@@ -139,29 +126,28 @@ this.map.addLayer({
                 'type': 'symbol',
                 'source': 'roads-mvt-source',
                 'source-layer': 'roads',
-                'minzoom': 14, // 🎯 优化：只在放大到高层级时显示文字，避免密集成团
+                'minzoom': 11, 
                 'layout': {
                     'text-field': ['get', 'name'], 
                     'text-size': [
                         'interpolate', ['linear'], ['zoom'],
-                        14, 10,
-                        18, 13
+                        11, 10,
+                        18, 14
                     ],
-                    'symbol-placement': 'line', // 🎯 优化：使文字沿道路线走向平滑延伸
-                    'text-max-angle': 30,
+                    'symbol-placement': 'line', 
                     'text-keep-upright': true
                 },
                 'paint': {
                     'text-color': '#FFFFFF',
-                    'text-halo-color': '#0d0f12', // 黑色描边，确保在绿色线之上的可读性
-                    'text-halo-width': 1.5
+                    'text-halo-color': '#0d0f12', 
+                    'text-halo-width': 2.0
                 }
             });
 
             // 2.3 地理围栏面层与边界线
             this.map.addLayer({
                 'id': 'fences-layer-fill', 'type': 'fill', 'source': 'fences-mvt-source', 'source-layer': 'fences',
-                'paint': { 'fill-color': '#007cbf', 'fill-opacity': 0.15 }
+                'paint': { 'fill-color': '#007cbf', 'fill-opacity': 0.2 }
             });
             this.map.addLayer({
                 'id': 'fences-layer-outline', 'type': 'line', 'source': 'fences-mvt-source', 'source-layer': 'fences',
@@ -169,7 +155,7 @@ this.map.addLayer({
             });
 
             // ==========================================
-            // 🛰️ 3. 业务图层：实时动态追踪层（置于最顶层）
+            // 🛰️ 3. 业务图层：实时动态追踪层
             // ==========================================
             this.map.addSource('device-track', {
                 'type': 'geojson',
@@ -250,6 +236,15 @@ this.map.addLayer({
     draw(coordinates) {
         if (!coordinates || coordinates.length === 0 || !this.map) return;
         const lastPoint = coordinates[coordinates.length - 1];
+
+        // 🎯 防御校验：避免轨迹中混入 [0,0] 等非法坐标触发 maxBounds 死锁崩溃
+        const lng = lastPoint[0];
+        const lat = lastPoint[1];
+        const b = this.shanghaiBounds;
+        if (lng < b[0][0] || lng > b[1][0] || lat < b[0][1] || lat > b[1][1]) {
+            console.warn(`⚠️ 拦截到越界轨迹坐标: [${lng}, ${lat}]`);
+            return; 
+        }
 
         const trackSource = this.map.getSource('device-track');
         if (trackSource) {
