@@ -60,6 +60,7 @@ const App = {
             style: {
                 "version": 8,
                 "sources": {},
+                "glyphs": "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
                 "layers": [
                     {
                         "id": "pure-dark-background",
