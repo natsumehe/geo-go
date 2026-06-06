@@ -435,25 +435,26 @@ func main() {
                 SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
 
 		case "roads":
-			// 🎯 降维打击：直接锁死你列出的沈海高速核心线段 osm_id，不再进行任何多余的分类过滤
+			// 🎯 锁死你的目标沈海高速线段 osm_id
 			filterSQL := "WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)"
 
-			// 🎯 因为数据量极小（只有这几条），彻底放弃降噪（tolerance 设为 0），100% 还原原始物理线段
+			// 🎯 完美自适应对齐 SQL（在 Go 里动态适配前端传入的 $1, $2, $3）
 			mvtQuery = fmt.Sprintf(`
         WITH tilegeom AS (
             SELECT osm_id, 
                    '沈海高速' AS name, 
                    'motorway' AS highway, 
                    ST_AsMVTGeom(
-                       way, 
+                       ST_Transform(way, 3857), -- 1. 显式纠偏，100% 确保像素转换正确
                        ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
-                       4096, 64, true
+                       4096, 64, true -- 开启物理裁剪，保证瓦片边缘平滑
                    ) AS geom
             FROM planet_osm_line
             %s 
-              AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
+              -- 2. 空间索引安全碰撞：将瓦片信封转换至与 way 的原始 SRID 一致
+              AND way && ST_Transform(ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), ST_SRID(way))
         )
-        SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`, filterSQL)
+        SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom WHERE geom IS NOT NULL;`, filterSQL)
 
 		default:
 			http.Error(w, "Layer not found", http.StatusNotFound)
