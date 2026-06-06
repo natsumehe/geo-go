@@ -20,22 +20,19 @@ import (
 )
 
 // ==========================================
-// 🛡️ 轨迹采集器核心：卡尔曼滤波器（平滑跳点与GPS漂移）
+// 🛡️ 轨迹采集器核心：卡尔曼滤波器
 // ==========================================
 type KalmanFilter struct {
-	LastValue float64 // 上一次的估计值
-	P         float64 // 估计误差协方差
-	Q         float64 // 过程噪声协方差
-	R         float64 // 测量噪声协方差
+	LastValue float64
+	P         float64
+	Q         float64
+	R         float64
 }
 
-// SmartUpdate 负责过滤由于高楼反射引起的 GPS 突变跳点
 func (kf *KalmanFilter) SmartUpdate(measuredValue float64, maxDelta float64) float64 {
 	if math.Abs(measuredValue-kf.LastValue) > maxDelta {
-		// 超过突变阈值，判定为单点漂移，暂时保持上一状态
 		return kf.LastValue
 	}
-	// 标准卡尔曼公式收敛迭代
 	kf.P = kf.P + kf.Q
 	kGain := kf.P / (kf.P + kf.R)
 	kf.LastValue = kf.LastValue + kGain*(measuredValue-kf.LastValue)
@@ -44,8 +41,9 @@ func (kf *KalmanFilter) SmartUpdate(measuredValue float64, maxDelta float64) flo
 }
 
 type DeviceFilters struct {
-	LatKF *KalmanFilter
-	LngKF *KalmanFilter
+	LatKF    *KalmanFilter
+	LngKF    *KalmanFilter
+	LastSeen time.Time // 🎯 新增：用于后续内存清理依据
 }
 
 type LastPos struct {
@@ -98,12 +96,19 @@ func WsHandler(w http.ResponseWriter, r *http.Request) {
 
 func notifyClients(msg string) {
 	clientsMu.RLock()
-	defer clientsMu.RUnlock()
+	// 🎯 优化：先复制出一份快照，避免在锁内执行耗时的网络 I/O 导致主线程死锁
+	var targetClients []*websocket.Conn
 	for client := range clients {
+		targetClients = append(targetClients, client)
+	}
+	clientsMu.RUnlock()
+
+	for _, client := range targetClients {
 		go func(c *websocket.Conn) {
 			err := c.WriteMessage(websocket.TextMessage, []byte(msg))
 			if err != nil {
 				c.Close()
+				// 🎯 修复：清理失效连接时必须请求写锁，防止多线程写冲突崩溃
 				clientsMu.Lock()
 				delete(clients, c)
 				clientsMu.Unlock()
@@ -178,10 +183,12 @@ func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 	lat, _ := strconv.ParseFloat(latStr, 64)
 
 	valKF, _ := kfStore.LoadOrStore(id, &DeviceFilters{
-		LatKF: &KalmanFilter{LastValue: lat, P: 1.0, Q: 0.000001, R: 0.0001},
-		LngKF: &KalmanFilter{LastValue: lng, P: 1.0, Q: 0.000001, R: 0.0001},
+		LatKF:    &KalmanFilter{LastValue: lat, P: 1.0, Q: 0.000001, R: 0.0001},
+		LngKF:    &KalmanFilter{LastValue: lng, P: 1.0, Q: 0.000001, R: 0.0001},
+		LastSeen: time.Now(),
 	})
 	kf := valKF.(*DeviceFilters)
+	kf.LastSeen = time.Now() // 刷新活跃时间
 
 	smoothLat := kf.LatKF.SmartUpdate(lat, 20.0)
 	smoothLng := kf.LngKF.SmartUpdate(lng, 20.0)
@@ -350,6 +357,22 @@ func main() {
 		time.Sleep(2 * time.Second)
 	}
 
+	// 🎯 新增安全守护：定期清理死掉采集端的卡尔曼历史数据，防止 OOM 内存泄漏
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		for range ticker.C {
+			now := time.Now()
+			kfStore.Range(func(key, value interface{}) bool {
+				if filter, ok := value.(*DeviceFilters); ok {
+					if now.Sub(filter.LastSeen) > 30*time.Minute {
+						kfStore.Delete(key)
+					}
+				}
+				return true
+			})
+		}
+	}()
+
 	http.HandleFunc("/update", UpdateHandle)
 	http.HandleFunc("/history", HistoryHandle)
 	http.HandleFunc("/alarms", AlarmsHandle)
@@ -361,7 +384,6 @@ func main() {
 	// ⚡ PostGIS 核心：多图层动态瓦片裁剪服务 (MVT)
 	// ==========================================
 	http.HandleFunc("/tiles/", func(w http.ResponseWriter, r *http.Request) {
-		// 1. 优先只拉起基础跨域安全头
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
@@ -387,7 +409,6 @@ func main() {
 		var mvtQuery string
 		switch layerName {
 		case "fences":
-			// 🎨 围栏裁剪：强制显式绑定 3857/4326 的双向空间变换，确保边界盒子精准覆盖
 			mvtQuery = `
                 WITH tilegeom AS (
                     SELECT id, name, 
@@ -398,16 +419,47 @@ func main() {
                 SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
 
 		case "roads":
-			// 🛰️ OSM 路网裁剪：强制死锁底层 3857 边界盒子参考系，防止由于 SRID 不确定引发的 && 索引脱钩
-			mvtQuery = `
-                WITH tilegeom AS (
-                    SELECT osm_id, name, highway, 
-                           ST_AsMVTGeom(way, ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 4096, 64, true) AS geom
-                    FROM planet_osm_line
-                    WHERE highway IS NOT NULL 
-                      AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
-                )
-                SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`
+			// 🎯 【重大重构】：根据前端传入的 Z 轴层级，执行动态语义化过滤与空间几何简化(ST_Simplify)
+			// 阻断低缩放级别下细节要素对 PostGIS 的性能轰炸
+			var filterSQL string
+			var tolerance float64
+
+			switch {
+			case z <= 11:
+				// 低层级：只过滤出主干道和高速，大幅度简化几何形态（容差 50米）
+				filterSQL = "WHERE highway IN ('motorway', 'trunk', 'primary')"
+				tolerance = 50.0
+			case z <= 14:
+				// 中层级：加入次干道，中度简化（容差 10米）
+				filterSQL = "WHERE highway IN ('motorway', 'trunk', 'primary', 'secondary', 'tertiary')"
+				tolerance = 10.0
+			default:
+				// 高层级：放行所有道路（包括居住区、小道），不做任何简化处理以保证精度
+				filterSQL = "WHERE highway IS NOT NULL"
+				tolerance = 0.0
+			}
+
+			if tolerance > 0.0 {
+				mvtQuery = fmt.Sprintf(`
+                    WITH tilegeom AS (
+                        SELECT osm_id, name, highway, 
+                               ST_AsMVTGeom(ST_SimplifyPreserveTopology(way, %f), ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 4096, 64, true) AS geom
+                        FROM planet_osm_line
+                        %s 
+                          AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
+                    )
+                    SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`, tolerance, filterSQL)
+			} else {
+				mvtQuery = fmt.Sprintf(`
+                    WITH tilegeom AS (
+                        SELECT osm_id, name, highway, 
+                               ST_AsMVTGeom(way, ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 4096, 64, true) AS geom
+                        FROM planet_osm_line
+                        %s 
+                          AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
+                    )
+                    SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`, filterSQL)
+			}
 
 		default:
 			http.Error(w, "Layer not found", http.StatusNotFound)
@@ -417,17 +469,14 @@ func main() {
 		var tileData []byte
 		err := db.QueryRow(mvtQuery, z, x, y).Scan(&tileData)
 
-		// 🎯 【关键自愈点】：如果当前切片物理真空（无数据），直接清空 Content-Type 并返回标准 204
-		// 严禁在此之前或者同时写入 application/vnd.mapbox-vector-tile，防止浏览器判定为坏损包
 		if err != nil || len(tileData) == 0 {
 			w.Header().Del("Content-Type")
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
-		// 🎯 【标准注入】：完全核准后，才声明二进制矢量切片规范头
 		w.Header().Set("Content-Type", "application/vnd.mapbox-vector-tile")
-		w.Header().Set("Cache-Control", "public, max-age=1800") // 注入 30 分钟缓存，极大减轻高并发下 PostGIS 的负担
+		w.Header().Set("Cache-Control", "public, max-age=1800")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(tileData)
 	})
@@ -449,7 +498,7 @@ func main() {
 
 	err = http.ListenAndServeTLS(":443", certPem, keyPem, nil)
 	if err != nil {
-		log.Printf("⚠️ HTTPS 安全端口监听失败（可能是证书文件锁死或权限不足）: %v", err)
+		log.Printf("⚠️ HTTPS 安全端口监听失败: %v", err)
 		log.Println("💡 强退降级防御：保持 8080 纯 HTTP 信道单轨运行...")
 		select {}
 	}
