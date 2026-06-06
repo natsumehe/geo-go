@@ -23,17 +23,7 @@ const map = new maplibregl.Map({
     maxZoom: 18,
     maxBounds: SHANGHAI_BOUNDS,
     
-    style: {
-        "version": 8,
-        "sources": {},
-        "layers": [
-            {
-                "id": "pure-dark-background",
-                "type": "background",
-                "paint": { "background-color": "#0d0f12" } // 满足你要求的黑白/暗黑无干扰底色
-            }
-        ]
-    }
+    style: 'https://demotiles.maplibre.org/style.json',
 });
 
 // ==========================================

@@ -43,7 +43,7 @@ func (kf *KalmanFilter) SmartUpdate(measuredValue float64, maxDelta float64) flo
 type DeviceFilters struct {
 	LatKF    *KalmanFilter
 	LngKF    *KalmanFilter
-	LastSeen time.Time // 🎯 用于后续内存清理依据
+	LastSeen time.Time
 }
 
 type LastPos struct {
@@ -60,7 +60,6 @@ var (
 	kfStore  sync.Map
 )
 
-// WebSocket 广播控制器
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
@@ -96,7 +95,6 @@ func WsHandler(w http.ResponseWriter, r *http.Request) {
 
 func notifyClients(msg string) {
 	clientsMu.RLock()
-	// 🎯 优化：先复制出一份快照，避免在锁内执行耗时的网络 I/O 导致主线程死锁
 	var targetClients []*websocket.Conn
 	for client := range clients {
 		targetClients = append(targetClients, client)
@@ -108,7 +106,6 @@ func notifyClients(msg string) {
 			err := c.WriteMessage(websocket.TextMessage, []byte(msg))
 			if err != nil {
 				c.Close()
-				// 🎯 修复：清理失效连接时必须请求写锁，防止多线程写冲突崩溃
 				clientsMu.Lock()
 				delete(clients, c)
 				clientsMu.Unlock()
@@ -155,9 +152,6 @@ func checkFence(driverID string, lng, lat float64) {
 	}
 }
 
-// ==========================================
-// 🚗 轨迹采集与处理器核心接口
-// ==========================================
 func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -188,7 +182,7 @@ func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 		LastSeen: time.Now(),
 	})
 	kf := valKF.(*DeviceFilters)
-	kf.LastSeen = time.Now() // 刷新活跃时间
+	kf.LastSeen = time.Now()
 
 	smoothLat := kf.LatKF.SmartUpdate(lat, 20.0)
 	smoothLng := kf.LngKF.SmartUpdate(lng, 20.0)
@@ -357,7 +351,6 @@ func main() {
 		time.Sleep(2 * time.Second)
 	}
 
-	// 🎯 定期清理死掉采集端的卡尔曼历史数据，防止 OOM 内存泄漏
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		for range ticker.C {
@@ -381,7 +374,7 @@ func main() {
 	http.HandleFunc("/ws", WsHandler)
 
 	// ==========================================
-	// ⚡ PostGIS 核心：多图层动态瓦片裁剪服务 (MVT)
+	// ⚡ PostGIS MVT 多图层矢量裁剪服务
 	// ==========================================
 	http.HandleFunc("/tiles/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -404,7 +397,7 @@ func main() {
 		layerName := parts[0]
 		z, errZ := strconv.Atoi(parts[1])
 		x, errX := strconv.Atoi(parts[2])
-		yStr := strings.Split(parts[3], "?")[0] // 剥离可能存在的 URL 缓存参数
+		yStr := strings.Split(parts[3], "?")[0]
 		y, errY := strconv.Atoi(yStr)
 
 		if errZ != nil || errX != nil || errY != nil {
@@ -430,10 +423,8 @@ func main() {
                 SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
 
 		case "roads":
-			filterSQL := "WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)"
-
-			// 🎯 精准锁死路网 3857 边界相交判定，彻底激活阿里云 PostGIS 空间索引
-			mvtQuery = fmt.Sprintf(`
+			// 🎯 核心自愈：动态探测 planet_osm_line 表的空间参考系(SRID)并对齐边界碰撞，激活空间索引
+			mvtQuery = `
                 WITH tilegeom AS (
                     SELECT osm_id, 
                            '沈海高速' AS name, 
@@ -444,10 +435,10 @@ func main() {
                                4096, 64, true
                            ) AS geom
                     FROM planet_osm_line
-                    %s 
-                      AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
+                    WHERE (highway = 'motorway' OR name LIKE '%沈海%')
+                      AND way && ST_Transform(ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), Find_SRID('public', 'planet_osm_line', 'way'))
                 )
-                SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom WHERE geom IS NOT NULL;`, filterSQL)
+                SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom WHERE geom IS NOT NULL;`
 
 		default:
 			http.Error(w, "Layer not found", http.StatusNotFound)
@@ -475,9 +466,7 @@ func main() {
 	}
 
 	fs := http.FileServer(http.Dir(staticDir))
-
 	http.Handle("/static/", http.StripPrefix("/static/", fs))
-
 	http.Handle("/", fs)
 
 	go func() {
