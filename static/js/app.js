@@ -1,112 +1,127 @@
 // ==========================================
-// 🛰️ 生产级网络拓扑自适应总线配置
+// 🛰️ 生产级自适应通信网关协议洗法
 // ==========================================
 const isHTTPS = window.location.protocol === 'https:';
-// 动态拼装后端基础 API 根路径与 WebSocket 安全加密链路
 const BASE_URL  = `${window.location.protocol}//${window.location.host}`;
 const WS_URL    = `${isHTTPS ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
 const MVT_URL   = `${BASE_URL}/tiles`;
 
-// ==========================================
-// 🗺️ 初始化地图物理渲染引擎
-// ==========================================
+// 上海行政区划数据安全过滤边界
+const SHANGHAI_BOUNDS = [
+    [120.85, 30.65], 
+    [122.15, 31.95]  
+];
 
+// ==========================================
+// 🗺️ 初始化地图物理渲染引擎 (极简纯黑偏好配置)
+// ==========================================
 const map = new maplibregl.Map({
     container: 'map',
+    center: [121.174, 31.420], // 精准空降：沈海高速嘉定段正上方
+    zoom: 12,
+    minZoom: 9,
+    maxZoom: 18,
+    maxBounds: SHANGHAI_BOUNDS,
+    
     style: {
         "version": 8,
-        "sources": {
-            "osm-tiles": {
-                "type": "raster",
-                "tiles": [
-                    "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                    "https://b.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                ],
-                "tileSize": 256
+        "sources": {},
+        "layers": [
+            {
+                "id": "pure-dark-background",
+                "type": "background",
+                "paint": { "background-color": "#0d0f12" } // 满足你要求的黑白/暗黑无干扰底色
             }
-        },
-        "layers": [{
-            "id": "osm-layer",
-            "type": "raster",
-            "source": "osm-tiles",
-            "minzoom": 0,
-            "maxzoom": 19
-        }]
-    },
-    center: [121.50, 31.23], // 默认锚定中心点
-    zoom: 11,
-    pitch: 45 // 给予大屏 45 度极客空间俯仰角
+        ]
+    }
 });
 
 // ==========================================
-// ⚡ 空间图层资产挂载（MVT 动态矢量瓦片双通道）
+// ⚡ 空间图层资产挂载（MVT 动态矢量瓦片）
 // ==========================================
 map.on('load', () => {
-	console.log("🟢 渲染引擎初始化就绪，开始挂载 PostGIS 动态矢量管道...");
+    console.log("🟢 WebGL 空间画布就绪，开始加载 MVT 管道...");
 
-    // 🎯 图层通道 1：地理电子围栏面要素 (fences)
-    map.addSource('fences_mvt', {
-        type: 'vector',
-        tiles: [`${MVT_URL}/fences/{z}/{x}/{y}.mvt`]
+    // 1. 注册数据源：强行绑定你的 Go 后端多图层瓦片接口
+    map.addSource('fences-mvt-source', {
+        'type': 'vector',
+        'tiles': [ MVT_URL + '/fences/{z}/{x}/{y}.mvt' ]
     });
+
+    map.addSource('roads-mvt-source', {
+        'type': 'vector',
+        'tiles': [ MVT_URL + '/roads/{z}/{x}/{y}.mvt' ],
+        'minzoom': 9,
+        'maxzoom': 18
+    });
+
+    // 2. 挂载地理围栏渲染图层 (淡淡的警示红)
     map.addLayer({
-        id: 'fences-layer',
-        type: 'fill',
-        source: 'fences_mvt',
+        'id': 'fences-layer-fill', 
+        'type': 'fill', 
+        'source': 'fences-mvt-source', 
         'source-layer': 'fences',
-        paint: {
-            'fill-color': '#ff3b30',
-            'fill-opacity': 0.25,
-            'fill-outline-color': '#ff3b30'
-        }
-    });
-
-    // 🎯 图层通道 2：沈海高速特定切片路网 (roads)
-    map.addSource('roads_mvt', {
-        type: 'vector',
-        tiles: [`${MVT_URL}/roads/{z}/{x}/{y}.mvt`]
+        'paint': { 'fill-color': '#ff3b30', 'fill-opacity': 0.15 }
     });
     map.addLayer({
-        id: 'roads-layer',
-        type: 'line',
-        source: 'roads_mvt',
-        'source-layer': 'roads',
-        layout: {
-            'line-join': 'round',
-            'line-cap': 'round'
+        'id': 'fences-layer-outline', 
+        'type': 'line', 
+        'source': 'fences-mvt-source', 
+        'source-layer': 'fences',
+        'paint': { 'line-color': '#ff3b30', 'line-width': 1.5 }
+    });
+
+    // 3. 核心修复：挂载沈海高速核心线层（荧光青色，确保图层在最上方正常穿透）
+    map.addLayer({
+        'id': 'roads-layer-line', 
+        'type': 'line', 
+        'source': 'roads-mvt-source', 
+        'source-layer': 'roads', // 必须严格对齐 Go 中 ST_AsMVT 的第二个参数
+        'layout': { 
+            'line-join': 'round', 
+            'line-cap': 'round' 
         },
-        paint: {
-            'line-color': '#00d2ff',
-            'line-width': 4,
-            'line-blur': 1 // 赋予高速路网极光发光特效
+        'paint': {
+            'line-color': '#00FFCC', // 极客荧光青
+            'line-width': [
+                'interpolate', ['linear'], ['zoom'], 
+                9, 4.0,
+                14, 7.0,
+                18, 12.0
+            ],
+            'line-opacity': 1.0
         }
     });
 
-    // 动态拉取当前数据库已激活的车辆/采集端下拉列表
+    // 初始化基础组件与全双工安全总线
     initDeviceDropdown();
-    // 拉取历史存证的前 10 条报警日志
     loadHistoricalAlarms();
-    // 激活全双工 WSS 实时加密总线
     connectWebSocket();
 });
 
 // ==========================================
-// 📶 业务逻辑：动态发现采集端设备列表
+// 📶 业务逻辑：异步轮询发现活跃设备列表
 // ==========================================
 function initDeviceDropdown() {
-    fetch(`${BASE_URL}/list`)
-        .then(res => res.json())
-        .then(devices => {
-            const select = document.getElementById('deviceList');
-            if (!devices) return;
-            devices.forEach(id => {
-                const opt = document.createElement('option');
-                opt.value = id;
-                opt.textContent = `设备 ID: ${id}`;
-                select.appendChild(opt);
-            });
-        })
-        .catch(err => console.error('❌ 获取活跃采集端失败:', err));
+    const fetchList = () => {
+        fetch(`${BASE_URL}/list`)
+            .then(res => res.json())
+            .then(devices => {
+                const select = document.getElementById('deviceList');
+                if (!devices) return;
+                
+                select.innerHTML = '<option value="">-- 选择设备查看历史轨迹 --</option>';
+                devices.filter(id => id && id.length > 0).forEach(id => {
+                    const opt = document.createElement('option');
+                    opt.value = id;
+                    opt.textContent = `设备 ID: ${id}`;
+                    select.appendChild(opt);
+                });
+            })
+            .catch(err => console.error('❌ 动态设备发现失败:', err));
+    };
+    fetchList();
+    setInterval(fetchList, 5000); 
 }
 
 // ==========================================
@@ -115,41 +130,42 @@ function initDeviceDropdown() {
 function switchDeviceHistory(deviceId) {
     if (!deviceId) return;
 
-    fetch(`${BASE_URL}/history?id=${deviceId}`)
+    fetch(`${BASE_URL}/history?id=${encodeURIComponent(deviceId)}`)
         .then(res => res.json())
         .then(geoJSON => {
-            // 防御清除机制：如果已经存在历史轨迹图层，先将其卸载掉
-            if (map.getLayer('history-line')) map.removeLayer('history-line');
-            if (map.getSource('history_source')) map.removeSource('history_source');
+            if (!geoJSON.coordinates || geoJSON.coordinates.length === 0) return;
 
-            // 挂载动态点查出来的 GeoJSON 线串
-            map.addSource('history_source', {
-                type: 'geojson',
-                data: geoJSON
+            const validCoords = geoJSON.coordinates.filter(pt => {
+                const lng = pt[0], lat = pt[1];
+                const b = SHANGHAI_BOUNDS;
+                return (lng >= b[0][0] && lng <= b[1][0] && lat >= b[0][1] && lat <= b[1][1]);
             });
+
+            if (validCoords.length === 0) return;
+
+            if (map.getLayer('track-layer')) map.removeLayer('track-layer');
+            if (map.getSource('device-track')) map.removeSource('device-track');
+
+            map.addSource('device-track', {
+                'type': 'geojson',
+                'data': {
+                    'type': 'Feature',
+                    'geometry': { 'type': 'LineString', 'coordinates': validCoords.slice(-100) }
+                }
+            }); 
 
             map.addLayer({
-                id: 'history-line',
-                type: 'line',
-                source: 'history_source',
-                paint: {
-                    'line-color': '#ffcc00',
-                    'line-width': 5,
-                    'line-dasharray': [2, 1] // 虚线流动动效衬托
-                }
+                'id': 'track-layer', 
+                'type': 'line', 
+                'source': 'device-track',
+                'layout': { 'line-join': 'round', 'line-cap': 'round' },
+                'paint': { 'line-color': '#ffea00', 'line-width': 4 } 
             });
 
-            // 智能纠偏：自动将地图视口平滑弹射移动到当前车辆的轨迹中心点
-            if (geoJSON.coordinates && geoJSON.coordinates.length > 0) {
-                const lastIdx = geoJSON.coordinates.length - 1;
-                map.flyTo({
-                    center: geoJSON.coordinates[lastIdx],
-                    zoom: 13,
-                    essential: true
-                });
-            }
+            const lastPoint = validCoords[validCoords.length - 1];
+            map.easeTo({ center: lastPoint, zoom: 14, duration: 500 });
         })
-        .catch(err => console.error('❌ 点查历史时序数据失败:', err));
+        .catch(err => console.error('❌ 历史轨迹点查错误:', err));
 }
 
 // ==========================================
@@ -160,17 +176,15 @@ function loadHistoricalAlarms() {
         .then(res => res.json())
         .then(logs => {
             if (!logs) return;
-            // 倒序排列，保证最新时间发生的在最上方
             logs.forEach(log => appendAlarmDOM(log.driver, log.fence, log.time));
         })
-        .catch(err => console.error('❌ 拉取报警存证失败:', err));
+        .catch(err => console.error('❌ 拉取报警记录失败:', err));
 }
 
 // ==========================================
 // 🔀 核心总线：生产级加密 WSS 全双工通信器
 // ==========================================
 function connectWebSocket() {
-    console.log(`🔒 正在向安全网关发起握手链路: ${WS_URL}`);
     const ws = new WebSocket(WS_URL);
 
     ws.onmessage = (event) => {
@@ -178,34 +192,26 @@ function connectWebSocket() {
             const data = JSON.parse(event.data);
             if (data.type === 'alarm') {
                 const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false });
-                // 触发实时大警消息轰炸并写入 DOM 
                 appendAlarmDOM(data.driver, data.fence, nowTime);
             }
-        } catch (e) {
-			// 过滤心跳或非标准协议包
-        }
+        } catch (e) {}
     };
 
-	// 生产级高可用：遭遇恶劣公网环境网络物理闪断时，每隔 5000ms 自动无限重连兜底
     ws.onclose = () => {
-        console.warn('⚠️ WSS 生产总线断开，正在尝试启动边缘自愈重连...');
         setTimeout(connectWebSocket, 5000);
-    };
-
-    ws.onerror = (err) => {
-        console.error('❌ WSS 链路异常阻断:', err);
     };
 }
 
-// 向右侧控制台插入报警条目的公用渲染组件
 function appendAlarmDOM(driver, fence, time) {
-    const logContainer = document.getElementById('alarmLog');
+    const logContainer = document.getElementById('alarm-logs');
+    if (!logContainer) return;
     const item = document.createElement('div');
-    item.className = 'alarm-item';
+    item.className = 'log-item';
     item.innerHTML = `
-        <span class="alarm-time">${time}</span>
-        <strong>🚨 入侵触发:</strong> 设备 <span>${driver}</span> 非法穿行于 <span>${fence}</span> 监控区内！
+        <span class="log-time">${time}</span>
+        <strong>🚨 违规闯区存证</strong><br>
+        对象: ${driver}<br>
+        区域: ${fence}
     `;
-    // 始终把最新回传的报警记录推至视窗最顶端
     logContainer.insertBefore(item, logContainer.firstChild);
 }
