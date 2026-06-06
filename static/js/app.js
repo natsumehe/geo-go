@@ -1,6 +1,6 @@
 /**
- * Geo-Go 指挥中心核心引擎 (MapLibre 高性能 WebGL 引擎解耦版)
- * 🚀 终极定型版：彻底解决底图层级劫持、数据视野错位与小层级线宽塌陷问题
+ * Geo-Go 指挥中心核心引擎 (MapLibre 高性能 WebGL 纯净定型版)
+ * 🚀 换个思路：剔除所有外部依赖，直接读取并诊断本地 MVT 线数据
  */
 const App = {
     map: null,
@@ -8,13 +8,12 @@ const App = {
     pollTimer: null,
     id: null,
 
-    // 🎯 核心扩展：覆盖 30.65°N ~ 31.95°N，确保崇明岛北部及江堤路等外延数据完全处于可视视野内
+    // 确定物理数据的有效边界
     shanghaiBounds: [
-        [120.85, 30.65], // 西南角
-        [122.15, 31.95]  // 东北角
+        [120.85, 30.65], 
+        [122.15, 31.95]  
     ],
 
-    // 为当前浏览器窗口生成全局唯一的设备指纹
     getDeviceID() {
         let id = localStorage.getItem('geo_device_id');
         if (!id) {
@@ -32,6 +31,15 @@ const App = {
     },
 
     init() {
+        // 🎯 纠偏防护：强行对地图容器挂载物理宽高，防止 CSS 隐形塌陷导致不显示
+        const mapEl = document.getElementById('map');
+        if (mapEl) {
+            mapEl.style.width = '100vw';
+            mapEl.style.height = '100vh';
+            mapEl.style.position = 'absolute';
+            mapEl.style.backgroundColor = '#0a0a0a'; // 纯黑底色大盘
+        }
+
         this.id = this.getDeviceID();
         const devInfo = document.getElementById('device-info');
         if (devInfo) devInfo.innerText = `DEVICE ID: ${this.id}`;
@@ -44,49 +52,96 @@ const App = {
     initMap() {
         this.map = new maplibregl.Map({
             container: 'map',
-            
-            // 🎯 【铁准对焦】：强行将中心点设置在你数据库中真实存在的江堤路物理坐标正上方（31.8631° N）
-            // 彻底解决因初始化在上海市中心（31.23° N）无数据盲区导致的 204 空白问题
+            // 🎯 【精准对焦】：锁定在江堤路数据中心点上方
             center: [121.2377, 31.8631],    
-            
-            zoom: 12, // 初始化在 12 层级，兼顾宏观与微观视野                      
-            minZoom: 5,                     
+            zoom: 13,                       
+            minZoom: 2,                     
             maxZoom: 18,                    
             maxBounds: this.shanghaiBounds, 
-            pitch: 0, // 初始采用 0 度平面俯视，排除 3D 俯仰角带来的视觉偏差
+            pitch: 0,                      
             
-            // 🎯 【底层自愈】：丢弃远程全托管 JSON，改用纯净栅格底图。
-            // 杜绝远程服务自带的全球路网劫持通道或吞噬本地图层的渲染层级
+            // 🎯 【纯净画布】：彻底不加载外部底图，只生成一个纯黑的矢量底盘上下文，排除任何图层劫持
             style: {
                 "version": 8,
-                "sources": {
-                    "carto-dark-raster": {
-                        "type": "raster",
-                        "tiles": [
-                            "https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
-                        ],
-                        "tileSize": 256
-                    }
-                },
+                "sources": {},
                 "layers": [
                     {
-                        "id": "background-layer",
-                        "type": "raster",
-                        "source": "carto-dark-raster",
-                        "minzoom": 0,
-                        "maxzoom": 20
+                        "id": "pure-dark-background",
+                        "type": "background",
+                        "paint": { "background-color": "#0d0f12" }
                     }
                 ]
             }
         });
 
+        // 监听渲染引擎本身的错误（如 WebGL 上下文丢包、MVT 解析失败等）
+        this.map.on('error', (e) => {
+            console.error("🚨 [WebGL 引擎异常]：", e.error?.message || e);
+        });
+
         this.map.on('load', () => {
-            console.log("WebGL 空间总线就绪，加载本地切片源...");
-            document.getElementById('status').innerText = "底图及高性能路网就绪，正在追踪数据...";
+            console.log("🟢 WebGL 空间画布就绪，开始加载本地 MVT 管道...");
+            document.getElementById('status').innerText = "纯净画布就绪，正在读取本地线数据...";
             
             const mvtHost = window.location.protocol + '//' + window.location.host;
 
-            // 1. 🔗 空间切片叠加：业务地理围栏 (MVT)
+            // ==========================================
+            // 🛰️ 核心读取：OSM 拓扑路网矢量源 (MVT)
+            // ==========================================
+            this.map.addSource('roads-mvt-source', {
+                'type': 'vector',
+                'tiles': [ mvtHost + '/tiles/roads/{z}/{x}/{y}.mvt' ],
+                'minzoom': 2,
+                'maxzoom': 18
+            });
+
+            // 挂载线渲染画笔
+            this.map.addLayer({
+                'id': 'roads-layer-line', 
+                'type': 'line', 
+                'source': 'roads-mvt-source', 
+                'source-layer': 'roads', // 🎯 严格对齐 Go 后端的 'roads'
+                'layout': { 
+                    'line-join': 'round', 
+                    'line-cap': 'round',
+                    'visibility': 'visible'
+                },
+                'paint': {
+                    'line-color': '#00FF88', // 强穿透超亮荧光绿
+                    'line-width': [
+                        'interpolate', ['linear'], ['zoom'], 
+                        5, 2.0, 
+                        10, 3.5, 
+                        15, 6.0, 
+                        18, 10.0
+                    ],
+                    'line-opacity': 0.95
+                }
+            });
+
+            // ==========================================
+            // 🔍 黑科技数据探针：直接打入内存级别断点
+            // ==========================================
+            this.map.on('sourcedata', (e) => {
+                if (e.sourceId === 'roads-mvt-source' && e.isSourceLoaded) {
+                    // 强行从当前视野网格中捞取被引擎解析出来的真实要素
+                    const features = this.map.querySourceFeatures('roads-mvt-source', {
+                        'sourceLayer': 'roads'
+                    });
+                    
+                    console.log(`📡 [MVT 探针] 收到后端数据包，当前内存中解析出的线要素: ${features.length} 个`);
+                    
+                    if (features.length > 0) {
+                        const sample = features[0];
+                        console.log("📊 [数据透视] 成功捕获线数据！");
+                        console.log(" -> 属性名称 (name):", sample.properties.name || "未命名");
+                        console.log(" -> 道路等级 (highway):", sample.properties.highway);
+                        console.log(" -> 几何类型 (Type):", sample.geometry.type);
+                    }
+                }
+            });
+
+            // 3. 业务图层：地理围栏 (MVT)
             this.map.addSource('fences-mvt-source', {
                 'type': 'vector',
                 'tiles': [ mvtHost + '/tiles/fences/{z}/{x}/{y}.mvt' ]
@@ -100,37 +155,7 @@ const App = {
                 'paint': { 'line-color': '#00d2ff', 'line-width': 2 }
             });
 
-            // 2. 🛰️ 空间切片叠加：OSM 拓扑路网 (MVT)
-            // 💡 剥离了所有尾部图层顺序依赖。现在，本图层以绝对优先级强制渲染在 WebGL 顶层画布表面！
-            this.map.addSource('roads-mvt-source', {
-                'type': 'vector',
-                'tiles': [ mvtHost + '/tiles/roads/{z}/{x}/{y}.mvt' ]
-            });
-            this.map.addLayer({
-                'id': 'roads-layer-line', 
-                'type': 'line', 
-                'source': 'roads-mvt-source', 
-                'source-layer': 'roads', // 🎯 严格小写，死锁对齐 Go 里的 ST_AsMVT(..., 'roads')
-                'layout': { 
-                    'line-join': 'round', 
-                    'line-cap': 'round',
-                    'visibility': 'visible'
-                },
-                'paint': {
-                    'line-color': '#00FF88', // 强穿透超亮荧光绿
-                    // 🎯 【线宽防缩放崩溃修正】：确保在 Z=5 到 Z=9 的大宏观层级下，依然能保持 1.5 到 2.0 像素的物理线宽，绝不塌陷隐形
-                    'line-width': [
-                        'interpolate', ['linear'], ['zoom'], 
-                        5, 1.5, 
-                        10, 2.5, 
-                        15, 5.0, 
-                        18, 8.0
-                    ],
-                    'line-opacity': 0.95
-                }
-            }); 
-
-            // 3. 🎯 全量单兵精细化实时轨迹追踪层 (GeoJSON 锁定槽)
+            // 4. 实时动态追踪层 (GeoJSON)
             this.map.addSource('device-track', {
                 'type': 'geojson',
                 'data': { 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': [] } }
@@ -138,7 +163,7 @@ const App = {
             this.map.addLayer({
                 'id': 'track-layer', 'type': 'line', 'source': 'device-track',
                 'layout': { 'line-join': 'round', 'line-cap': 'round' },
-                'paint': { 'line-color': '#ffea00', 'line-width': 4 } // 亮黄色轨迹主线
+                'paint': { 'line-color': '#ffea00', 'line-width': 4 } 
             });
 
             this.map.addSource('device-pointer', {
@@ -197,15 +222,15 @@ const App = {
         this.pollTimer = setInterval(track, 3000); 
     },
 
-    async fetchUpdate(id) {
-        try {
-            const res = await fetch(`/history?id=${encodeURIComponent(id)}`);
-            const data = await res.json();
-            if (data.coordinates && data.coordinates.length > 0) {
-                this.draw(data.coordinates.slice(-100)); 
-            }
-        } catch (e) { console.error("Track error", e); }
-    },
+	async fetchUpdate(id) {
+		try {
+			const res = await fetch(`/history?id=${encodeURIComponent(id)}`);
+			const data = await res.json();
+			if (data.coordinates && data.coordinates.length > 0) {
+				this.draw(data.coordinates.slice(-100)); 
+			}
+		} catch (e) { console.error("Track error", e); }
+	},
 
     draw(coordinates) {
         if (!coordinates || coordinates.length === 0 || !this.map) return;
@@ -258,5 +283,4 @@ const App = {
     }
 };
 
-// 执行引擎挂载初始化
 App.init();

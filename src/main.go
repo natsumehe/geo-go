@@ -232,14 +232,13 @@ func HistoryHandle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 🎯 修复逻辑：子查询优先显式通过 created_at DESC 抓取最近的100个点，外层聚合再通过 ASC 顺序穿线
 	query := `
-		SELECT COALESCE(ST_AsGeoJSON(ST_MakeLine(sub.location ORDER BY sub.created_at ASC)), '{"type": "LineString", "coordinates": []}') 
-		FROM (
-			SELECT location, created_at FROM driver_history 
-			WHERE name = $1 
-			ORDER BY created_at DESC LIMIT 100
-		) AS sub`
+        SELECT COALESCE(ST_AsGeoJSON(ST_MakeLine(sub.location ORDER BY sub.created_at ASC)), '{"type": "LineString", "coordinates": []}') 
+        FROM (
+            SELECT location, created_at FROM driver_history 
+            WHERE name = $1 
+            ORDER BY created_at DESC LIMIT 100
+        ) AS sub`
 
 	var geoJSON string
 	err := db.QueryRow(query, id).Scan(&geoJSON)
@@ -255,9 +254,9 @@ func AlarmsHandle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	rows, err := db.Query(`
-		SELECT driver_name, fence_name, to_char(created_at, 'HH24:MI:SS') 
-		FROM alarm_logs 
-		ORDER BY created_at DESC LIMIT 10`)
+        SELECT driver_name, fence_name, to_char(created_at, 'HH24:MI:SS') 
+        FROM alarm_logs 
+        ORDER BY created_at DESC LIMIT 10`)
 	if err != nil {
 		fmt.Fprint(w, `[]`)
 		return
@@ -362,10 +361,10 @@ func main() {
 	// ⚡ PostGIS 核心：多图层动态瓦片裁剪服务 (MVT)
 	// ==========================================
 	http.HandleFunc("/tiles/", func(w http.ResponseWriter, r *http.Request) {
+		// 1. 优先只拉起基础跨域安全头
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Content-Type", "application/vnd.mapbox-vector-tile")
 
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
@@ -388,28 +387,27 @@ func main() {
 		var mvtQuery string
 		switch layerName {
 		case "fences":
+			// 🎨 围栏裁剪：强制显式绑定 3857/4326 的双向空间变换，确保边界盒子精准覆盖
 			mvtQuery = `
                 WITH tilegeom AS (
-                    SELECT id, name, ST_AsMVTGeom(ST_Transform(area, 3857), ST_TileEnvelope($1, $2, $3), 4096, 64, true) AS geom
+                    SELECT id, name, 
+                           ST_AsMVTGeom(ST_Transform(area, 3857), ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 4096, 64, true) AS geom
                     FROM fences
-                    WHERE area && ST_Transform(ST_TileEnvelope($1, $2, $3), 4326)
+                    WHERE area && ST_Transform(ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 4326)
                 )
                 SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
 
 		case "roads":
+			// 🛰️ OSM 路网裁剪：强制死锁底层 3857 边界盒子参考系，防止由于 SRID 不确定引发的 && 索引脱钩
 			mvtQuery = `
-				WITH tilegeom AS (
-					SELECT 
-						osm_id, 
-						name, 
-						highway, 
-						ST_AsMVTGeom(way, ST_TileEnvelope($1, $2, $3), 4096, 64, true) AS geom
-					FROM planet_osm_line
-					WHERE highway IS NOT NULL 
-					  -- ⚡ 极速原生空间边界求交
-					  AND way && ST_TileEnvelope($1, $2, $3)
-				)
-				SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`
+                WITH tilegeom AS (
+                    SELECT osm_id, name, highway, 
+                           ST_AsMVTGeom(way, ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 4096, 64, true) AS geom
+                    FROM planet_osm_line
+                    WHERE highway IS NOT NULL 
+                      AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
+                )
+                SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`
 
 		default:
 			http.Error(w, "Layer not found", http.StatusNotFound)
@@ -418,11 +416,18 @@ func main() {
 
 		var tileData []byte
 		err := db.QueryRow(mvtQuery, z, x, y).Scan(&tileData)
+
+		// 🎯 【关键自愈点】：如果当前切片物理真空（无数据），直接清空 Content-Type 并返回标准 204
+		// 严禁在此之前或者同时写入 application/vnd.mapbox-vector-tile，防止浏览器判定为坏损包
 		if err != nil || len(tileData) == 0 {
+			w.Header().Del("Content-Type")
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
+		// 🎯 【标准注入】：完全核准后，才声明二进制矢量切片规范头
+		w.Header().Set("Content-Type", "application/vnd.mapbox-vector-tile")
+		w.Header().Set("Cache-Control", "public, max-age=1800") // 注入 30 分钟缓存，极大减轻高并发下 PostGIS 的负担
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(tileData)
 	})
@@ -439,19 +444,13 @@ func main() {
 	}()
 
 	fmt.Println("🔒 HTTPS 分发网关就绪，拉起加密总线...")
-	// 🎯 修复路径挂载匹配：对齐阿里云个人测试证书在宿主机或容器中的典型解压命名规则
 	certPem := "/ssl/cert.pem"
 	keyPem := "/ssl/cert.key"
-	if _, errC := os.Stat(certPem); errC != nil {
-		// 备用机制：防止挂载的是绝对密钥对后缀名称
-		certPem = "/ssl/cert.pem"
-		keyPem = "/ssl/cert.key"
-	}
 
 	err = http.ListenAndServeTLS(":443", certPem, keyPem, nil)
 	if err != nil {
 		log.Printf("⚠️ HTTPS 安全端口监听失败（可能是证书文件锁死或权限不足）: %v", err)
 		log.Println("💡 强退降级防御：保持 8080 纯 HTTP 信道单轨运行...")
-		select {} // 阻止 main 退出，允许 8080 端口继续提供全量静态网页与接口服务
+		select {}
 	}
 }
