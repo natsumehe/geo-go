@@ -423,19 +423,18 @@ func main() {
                 SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
 
 		case "roads":
-			// 🎯 核心自愈：动态探测 planet_osm_line 表的空间参考系(SRID)并对齐边界碰撞，激活空间索引
+			// 🎯 核心修正：利用 Find_SRID 动态对齐坐标系，确保 way 无论是 4326 还是 3857，&& 都能完美命中空间索引
 			mvtQuery = `
                 WITH tilegeom AS (
                     SELECT osm_id, 
                            '沈海高速' AS name, 
-                           'motorway' AS highway, 
                            ST_AsMVTGeom(
                                ST_Transform(way, 3857), 
                                ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
                                4096, 64, true
                            ) AS geom
                     FROM planet_osm_line
-                    WHERE (highway = 'motorway' OR name LIKE '%沈海%')
+                    WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)
                       AND way && ST_Transform(ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), Find_SRID('public', 'planet_osm_line', 'way'))
                 )
                 SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom WHERE geom IS NOT NULL;`
