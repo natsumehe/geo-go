@@ -1,6 +1,6 @@
 /**
  * Geo-Go 指挥中心核心引擎 (MapLibre 高性能 WebGL 引擎解耦版)
- * 🚀 终极定型版：彻底解决底图层级劫持与数据视野错位问题
+ * 🚀 终极定型版：彻底解决底图层级劫持、数据视野错位与小层级线宽塌陷问题
  */
 const App = {
     map: null,
@@ -49,7 +49,7 @@ const App = {
             // 彻底解决因初始化在上海市中心（31.23° N）无数据盲区导致的 204 空白问题
             center: [121.2377, 31.8631],    
             
-            zoom: 14, // 拉近初始视野，开天窗直接贴脸肉眼观察                      
+            zoom: 12, // 初始化在 12 层级，兼顾宏观与微观视野                      
             minZoom: 5,                     
             maxZoom: 18,                    
             maxBounds: this.shanghaiBounds, 
@@ -118,7 +118,14 @@ const App = {
                 },
                 'paint': {
                     'line-color': '#00FF88', // 强穿透超亮荧光绿
-                    'line-width': ['interpolate', ['linear'], ['zoom'], 10, 2.0, 15, 4.0, 18, 8.0],
+                    // 🎯 【线宽防缩放崩溃修正】：确保在 Z=5 到 Z=9 的大宏观层级下，依然能保持 1.5 到 2.0 像素的物理线宽，绝不塌陷隐形
+                    'line-width': [
+                        'interpolate', ['linear'], ['zoom'], 
+                        5, 1.5, 
+                        10, 2.5, 
+                        15, 5.0, 
+                        18, 8.0
+                    ],
                     'line-opacity': 0.95
                 }
             }); 
