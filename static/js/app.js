@@ -7,10 +7,10 @@ const App = {
     pollTimer: null,
     id: null,
 
-    // 精准限定上海的地理外延边界，强制阻止用户拖拽到无数据盲区
+    // 🎯 核心修复：扩展上海及周边外延边界，确保支持到 31.95°N（全面解锁崇明岛北部与江堤路区域）
     shanghaiBounds: [
-        [121.10, 30.90], 
-        [121.75, 31.50]  
+        [120.85, 30.65], // 西南角扩展
+        [122.15, 31.95]  // 东北角扩展，完全包容 31.86°N 的数据
     ],
 
     // 为当前浏览器窗口生成全局唯一的设备指纹
@@ -45,7 +45,7 @@ const App = {
             container: 'map',
             center: [121.4737, 31.2304],    
             zoom: 12,                       
-            minZoom: 10,                    
+            minZoom: 5, // 💡 降低最小缩放限制，方便在视野内全局寻找图层                     
             maxZoom: 18,                    
             maxBounds: this.shanghaiBounds, 
             pitch: 45,                      
@@ -57,8 +57,6 @@ const App = {
             console.log("WebGL 空间总线就绪，加载切片源...");
             document.getElementById('status').innerText = "底图及高性能路网就绪，正在追踪数据...";
             
-            // 🎯 修复方案：动态适配当前环境的协议和端口。
-            // 既然使用的是阿里云合规证书，瓦片通道必须走相同的 HTTPS 加密链路，防止浏览器拦截 Mixed Content。
             const mvtHost = window.location.protocol + '//' + window.location.host;
 
             // 1. 🔗 空间切片叠加：业务地理围栏 (MVT)
@@ -81,19 +79,21 @@ const App = {
                 'tiles': [ mvtHost + '/tiles/roads/{z}/{x}/{y}.mvt' ]
             });
             this.map.addLayer({
-                'id': 'roads-layer-line', 'type': 'line', 'source': 'roads-mvt-source', 'source-layer': 'roads',
+                'id': 'roads-layer-line', 'type': 'line', 'source': 'roads-mvt-source', 
+                // 🎯 严格校验：确保与 Go 代码中的 ST_AsMVT(..., 'roads') 命名空间绝对对齐
+                'source-layer': 'roads',
                 'layout': { 'line-join': 'round', 'line-cap': 'round' },
                 'paint': {
                     'line-color': '#2ECC71', // 荧光绿物理路网
-                    'line-width': ['interpolate', ['linear'], ['zoom'], 10, 1.0, 15, 3.0, 18, 6.0],
-                    'line-opacity': 0.65
+                    'line-width': ['interpolate', ['linear'], ['zoom'], 10, 1.5, 15, 3.5, 18, 6.0],
+                    'line-opacity': 0.85     // 适当提高不透明度增加辨识度
                 }
             }, 'fences-layer-outline'); // 放置于围栏下方，防重叠视差
 
             // 3. 🎯 全量单兵精细化实时轨迹追踪层 (GeoJSON 锁定槽)
             this.map.addSource('device-track', {
                 'type': 'geojson',
-                'data': { 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': [] } }
+                'data': { 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': [] } } device-track
             });
             this.map.addLayer({
                 'id': 'track-layer', 'type': 'line', 'source': 'device-track',
@@ -121,7 +121,7 @@ const App = {
             } catch (e) { console.error("Discovery failed", e); }
         };
         refreshList();
-        setInterval(refreshList, 5000); // 5秒轮询扫描新上线的设备
+        setInterval(refreshList, 5000); 
     },
 
     renderCards(devices) {
@@ -154,7 +154,7 @@ const App = {
         if (this.pollTimer) clearInterval(this.pollTimer);
         const track = () => this.fetchUpdate(id);
         track();
-        this.pollTimer = setInterval(track, 3000); // 3秒强效死锁历史平滑链同步
+        this.pollTimer = setInterval(track, 3000); 
     },
 
     async fetchUpdate(id) {
@@ -162,7 +162,7 @@ const App = {
             const res = await fetch(`/history?id=${encodeURIComponent(id)}`);
             const data = await res.json();
             if (data.coordinates && data.coordinates.length > 0) {
-                this.draw(data.coordinates.slice(-100)); // 取最新100个平滑点绘制，防止数据量过载闪烁
+                this.draw(data.coordinates.slice(-100)); 
             }
         } catch (e) { console.error("Track error", e); }
     },
