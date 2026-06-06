@@ -1,5 +1,6 @@
 /**
  * Geo-Go 指挥中心核心引擎 (MapLibre 高性能 WebGL 引擎解耦版)
+ * 🚀 终极定型版：彻底解决底图层级劫持与数据视野错位问题
  */
 const App = {
     map: null,
@@ -7,7 +8,7 @@ const App = {
     pollTimer: null,
     id: null,
 
-    // 🎯 核心扩展：覆盖 31.95°N，确保崇明岛北部及江堤路等外延数据完全处于可视视野内
+    // 🎯 核心扩展：覆盖 30.65°N ~ 31.95°N，确保崇明岛北部及江堤路等外延数据完全处于可视视野内
     shanghaiBounds: [
         [120.85, 30.65], // 西南角
         [122.15, 31.95]  // 东北角
@@ -43,18 +44,44 @@ const App = {
     initMap() {
         this.map = new maplibregl.Map({
             container: 'map',
-            center: [121.4737, 31.2304],    
-            zoom: 12,                       
+            
+            // 🎯 【铁准对焦】：强行将中心点设置在你数据库中真实存在的江堤路物理坐标正上方（31.8631° N）
+            // 彻底解决因初始化在上海市中心（31.23° N）无数据盲区导致的 204 空白问题
+            center: [121.2377, 31.8631],    
+            
+            zoom: 14, // 拉近初始视野，开天窗直接贴脸肉眼观察                      
             minZoom: 5,                     
             maxZoom: 18,                    
             maxBounds: this.shanghaiBounds, 
-            pitch: 45,                      
-            // 采用标准科技暗色调底图
-            style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
+            pitch: 0, // 初始采用 0 度平面俯视，排除 3D 俯仰角带来的视觉偏差
+            
+            // 🎯 【底层自愈】：丢弃远程全托管 JSON，改用纯净栅格底图。
+            // 杜绝远程服务自带的全球路网劫持通道或吞噬本地图层的渲染层级
+            style: {
+                "version": 8,
+                "sources": {
+                    "carto-dark-raster": {
+                        "type": "raster",
+                        "tiles": [
+                            "https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
+                        ],
+                        "tileSize": 256
+                    }
+                },
+                "layers": [
+                    {
+                        "id": "background-layer",
+                        "type": "raster",
+                        "source": "carto-dark-raster",
+                        "minzoom": 0,
+                        "maxzoom": 20
+                    }
+                ]
+            }
         });
 
         this.map.on('load', () => {
-            console.log("WebGL 空间总线就绪，加载切片源...");
+            console.log("WebGL 空间总线就绪，加载本地切片源...");
             document.getElementById('status').innerText = "底图及高性能路网就绪，正在追踪数据...";
             
             const mvtHost = window.location.protocol + '//' + window.location.host;
@@ -74,6 +101,7 @@ const App = {
             });
 
             // 2. 🛰️ 空间切片叠加：OSM 拓扑路网 (MVT)
+            // 💡 剥离了所有尾部图层顺序依赖。现在，本图层以绝对优先级强制渲染在 WebGL 顶层画布表面！
             this.map.addSource('roads-mvt-source', {
                 'type': 'vector',
                 'tiles': [ mvtHost + '/tiles/roads/{z}/{x}/{y}.mvt' ]
@@ -82,28 +110,28 @@ const App = {
                 'id': 'roads-layer-line', 
                 'type': 'line', 
                 'source': 'roads-mvt-source', 
-                'source-layer': 'roads', // 🎯 严格对齐 Go 后端命名通道
+                'source-layer': 'roads', // 🎯 严格小写，死锁对齐 Go 里的 ST_AsMVT(..., 'roads')
                 'layout': { 
                     'line-join': 'round', 
                     'line-cap': 'round',
                     'visibility': 'visible'
                 },
                 'paint': {
-                    'line-color': '#00FF88', // 超亮荧光绿，增强暗色底图穿透力
+                    'line-color': '#00FF88', // 强穿透超亮荧光绿
                     'line-width': ['interpolate', ['linear'], ['zoom'], 10, 2.0, 15, 4.0, 18, 8.0],
                     'line-opacity': 0.95
                 }
-            }); // 👈 核心修复：移除尾部参照物参数，强制将其渲染在 WebGL 画布的最顶层
+            }); 
 
             // 3. 🎯 全量单兵精细化实时轨迹追踪层 (GeoJSON 锁定槽)
             this.map.addSource('device-track', {
                 'type': 'geojson',
                 'data': { 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': [] } }
-            }); // 👈 核心修复：移除了末尾残留的拼写碎屑
+            }); 
             this.map.addLayer({
                 'id': 'track-layer', 'type': 'line', 'source': 'device-track',
                 'layout': { 'line-join': 'round', 'line-cap': 'round' },
-                'paint': { 'line-color': '#ffea00', 'line-width': 4 } 
+                'paint': { 'line-color': '#ffea00', 'line-width': 4 } // 亮黄色轨迹主线
             });
 
             this.map.addSource('device-pointer', {
