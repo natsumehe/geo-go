@@ -419,24 +419,20 @@ func main() {
                 SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
 
 		case "roads":
-			// 🎯 【重大重构】：根据前端传入的 Z 轴层级，执行动态语义化过滤与空间几何简化(ST_Simplify)
-			// 阻断低缩放级别下细节要素对 PostGIS 的性能轰炸
-			var filterSQL string
-			var tolerance float64
+			// 🎯 【精准瘦身】：强制只过滤 OSM 中最重要的前三种核心道路
+			// 彻底杜绝 residential, service, tertiary 等海量支路对数据库的性能轰炸
+			filterSQL := "WHERE highway IN ('motorway', 'trunk', 'primary')"
 
+			// 🎯 空间几何简化容差设置
+			// 即使只有三种路，在低缩放级别（如 zoom 9、10）看全上海时，线条节点依旧极多，必须做抽稀
+			var tolerance float64
 			switch {
 			case z <= 11:
-				// 低层级：只过滤出主干道和高速，大幅度简化几何形态（容差 50米）
-				filterSQL = "WHERE highway IN ('motorway', 'trunk', 'primary')"
-				tolerance = 50.0
+				tolerance = 40.0 // 低层级：大跨度简化（容差 40米）
 			case z <= 14:
-				// 中层级：加入次干道，中度简化（容差 10米）
-				filterSQL = "WHERE highway IN ('motorway', 'trunk', 'primary', 'secondary', 'tertiary')"
-				tolerance = 10.0
+				tolerance = 10.0 // 中层级：适度简化（容差 10米）
 			default:
-				// 高层级：放行所有道路（包括居住区、小道），不做任何简化处理以保证精度
-				filterSQL = "WHERE highway IS NOT NULL"
-				tolerance = 0.0
+				tolerance = 0.0 // 高层级：不简化，保持原本精度
 			}
 
 			if tolerance > 0.0 {
