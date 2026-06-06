@@ -126,6 +126,9 @@ func HaversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
 }
 
 func checkFence(driverID string, lng, lat float64) {
+	if db == nil {
+		return
+	}
 	var fenceName string
 	fenceQuery := `
                 SELECT name FROM fences 
@@ -174,7 +177,6 @@ func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 	lng, _ := strconv.ParseFloat(lngStr, 64)
 	lat, _ := strconv.ParseFloat(latStr, 64)
 
-	// 并发安全地提取特定车辆的卡尔曼状态机
 	valKF, _ := kfStore.LoadOrStore(id, &DeviceFilters{
 		LatKF: &KalmanFilter{LastValue: lat, P: 1.0, Q: 0.000001, R: 0.0001},
 		LngKF: &KalmanFilter{LastValue: lng, P: 1.0, Q: 0.000001, R: 0.0001},
@@ -195,26 +197,26 @@ func UpdateHandle(w http.ResponseWriter, r *http.Request) {
 	if ok {
 		last := valCache.(LastPos)
 		dist := HaversineDistance(last.Lat, last.Lng, smoothLat, smoothLng)
-		// 动态静止抑制：避免车辆停放时在原地高频刷点产生脏数据
 		if dist < 3.0 && time.Since(last.Timestamp) < 10*time.Second {
 			shouldWriteHistory = false
 		}
 	}
 
 	go func(dID string, rawLo, rawLa, smLo, smLa float64, isMoving bool) {
-		if db != nil {
-			rawSQL := `INSERT INTO driver_raw_data (name, location, provider, accuracy, created_at)
-                       VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), 'gps', 20.0, NOW())`
-			_, _ = db.Exec(rawSQL, dID, rawLo, rawLa)
+		if db == nil {
+			return
+		}
+		rawSQL := `INSERT INTO driver_raw_data (name, location, provider, accuracy, created_at)
+                   VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), 'gps', 20.0, NOW())`
+		_, _ = db.Exec(rawSQL, dID, rawLo, rawLa)
 
-			if isMoving {
-				historySQL := `INSERT INTO driver_history (name, location, provider, accuracy, created_at) 
-                               VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), 'gps', 20.0, NOW())`
-				_, _ = db.Exec(historySQL, dID, smLo, smLa)
+		if isMoving {
+			historySQL := `INSERT INTO driver_history (name, location, provider, accuracy, created_at) 
+                           VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), 'gps', 20.0, NOW())`
+			_, _ = db.Exec(historySQL, dID, smLo, smLa)
 
-				posCache.Store(dID, LastPos{Lat: smLa, Lng: smLo, Timestamp: time.Now()})
-				checkFence(dID, smLo, smLa)
-			}
+			posCache.Store(dID, LastPos{Lat: smLa, Lng: smLo, Timestamp: time.Now()})
+			checkFence(dID, smLo, smLa)
 		}
 	}(id, lng, lat, smoothLng, smoothLat, shouldWriteHistory)
 
@@ -230,13 +232,14 @@ func HistoryHandle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 🎯 修复逻辑：子查询优先显式通过 created_at DESC 抓取最近的100个点，外层聚合再通过 ASC 顺序穿线
 	query := `
-        SELECT COALESCE(ST_AsGeoJSON(ST_MakeLine(location ORDER BY created_at ASC)), '{"type": "LineString", "coordinates": []}') 
-        FROM (
-            SELECT location, created_at FROM driver_history 
-            WHERE name = $1 
-            ORDER BY created_at DESC LIMIT 100
-        ) AS subquery`
+		SELECT COALESCE(ST_AsGeoJSON(ST_MakeLine(sub.location ORDER BY sub.created_at ASC)), '{"type": "LineString", "coordinates": []}') 
+		FROM (
+			SELECT location, created_at FROM driver_history 
+			WHERE name = $1 
+			ORDER BY created_at DESC LIMIT 100
+		) AS sub`
 
 	var geoJSON string
 	err := db.QueryRow(query, id).Scan(&geoJSON)
@@ -252,9 +255,9 @@ func AlarmsHandle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	rows, err := db.Query(`
-        SELECT driver_name, fence_name, to_char(created_at, 'HH24:MI:SS') 
-        FROM alarm_logs 
-        ORDER BY created_at DESC LIMIT 10`)
+		SELECT driver_name, fence_name, to_char(created_at, 'HH24:MI:SS') 
+		FROM alarm_logs 
+		ORDER BY created_at DESC LIMIT 10`)
 	if err != nil {
 		fmt.Fprint(w, `[]`)
 		return
@@ -386,25 +389,29 @@ func main() {
 		switch layerName {
 		case "fences":
 			mvtQuery = `
-				WITH tilegeom AS (
-					SELECT id, name, ST_AsMVTGeom(ST_Transform(area, 3857), ST_TileEnvelope($1, $2, $3), 4096, 64, true) AS geom
-					FROM fences
-					WHERE area && ST_Transform(ST_TileEnvelope($1, $2, $3), 4326)
-				)
-				SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
+                WITH tilegeom AS (
+                    SELECT id, name, ST_AsMVTGeom(ST_Transform(area, 3857), ST_TileEnvelope($1, $2, $3), 4096, 64, true) AS geom
+                    FROM fences
+                    WHERE area && ST_Transform(ST_TileEnvelope($1, $2, $3), 4326)
+                )
+                SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
 
 		case "roads":
+			// 🎯 核心修复：在此处无缝织入全自动空间投影自愈计算，解救被强贴 3857 标签的经纬度度数数据
 			mvtQuery = `
 				WITH tilegeom AS (
 					SELECT 
 						osm_id, 
 						name, 
 						highway, 
-						ST_AsMVTGeom(way, ST_TileEnvelope($1, $2, $3), 4096, 64, true) AS geom
+						ST_AsMVTGeom(
+							ST_Transform(ST_SetSRID(way, 4326), 3857), 
+							ST_TileEnvelope($1, $2, $3), 
+							4096, 64, true
+						) AS geom
 					FROM planet_osm_line
 					WHERE highway IS NOT NULL 
-					-- 极速 BBOX 相交检索
-					AND way && ST_TileEnvelope($1, $2, $3)
+					  AND ST_Transform(ST_SetSRID(way, 4326), 3857) && ST_TileEnvelope($1, $2, $3)
 				)
 				SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`
 
@@ -435,9 +442,20 @@ func main() {
 		_ = http.ListenAndServe(":8080", nil)
 	}()
 
-	fmt.Println("🔒 HTTPS 分发网关已就绪: 443")
-	err = http.ListenAndServeTLS(":443", "/ssl/cert.pem", "/ssl/cert.key", nil)
+	fmt.Println("🔒 HTTPS 分发网关就绪，拉起加密总线...")
+	// 🎯 修复路径挂载匹配：对齐阿里云个人测试证书在宿主机或容器中的典型解压命名规则
+	certPem := "/ssl/cert.pem"
+	keyPem := "/ssl/key.pem"
+	if _, errC := os.Stat(certPem); errC != nil {
+		// 备用机制：防止挂载的是绝对密钥对后缀名称
+		certPem = "/ssl/cert.pem"
+		keyPem = "/ssl/key.key"
+	}
+
+	err = http.ListenAndServeTLS(":443", certPem, keyPem, nil)
 	if err != nil {
-		log.Fatalf("❌ 安全网关监听失败: %v", err)
+		log.Printf("⚠️ HTTPS 安全端口监听失败（可能是证书文件锁死或权限不足）: %v", err)
+		log.Println("💡 强退降级防御：保持 8080 纯 HTTP 信道单轨运行...")
+		select {} // 阻止 main 退出，允许 8080 端口继续提供全量静态网页与接口服务
 	}
 }
