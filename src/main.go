@@ -383,6 +383,9 @@ func main() {
 	// ==========================================
 	// ⚡ PostGIS 核心：多图层动态瓦片裁剪服务 (MVT)
 	// ==========================================
+	// ==========================================
+	// ⚡ PostGIS 核心：多图层动态瓦片裁剪服务 (MVT)
+	// ==========================================
 	http.HandleFunc("/tiles/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
@@ -393,8 +396,9 @@ func main() {
 			return
 		}
 
+		// 健壮清洗路径：兼容前端可能带有的 .mvt 后缀或 URL 参数
 		path := strings.TrimPrefix(r.URL.Path, "/tiles/")
-		path = strings.TrimSuffix(path, ".mvt")
+		path = strings.ReplaceAll(path, ".mvt", "")
 		parts := strings.Split(path, "/")
 		if len(parts) < 4 {
 			http.Error(w, "Bad Request", http.StatusBadRequest)
@@ -402,65 +406,78 @@ func main() {
 		}
 
 		layerName := parts[0]
-		z, _ := strconv.Atoi(parts[1])
-		x, _ := strconv.Atoi(parts[2])
-		y, _ := strconv.Atoi(parts[3])
+		z, errZ := strconv.Atoi(parts[1])
+		x, errX := strconv.Atoi(parts[2])
+		yStr := strings.Split(parts[3], "?")[0] // 剥离可能存在的 URL 缓存参数
+		y, errY := strconv.Atoi(yStr)
+
+		if errZ != nil || errX != nil || errY != nil {
+			http.Error(w, "Invalid Tile Coordinates", http.StatusBadRequest)
+			return
+		}
 
 		var mvtQuery string
 		switch layerName {
+
 		case "fences":
+			// 🎯 地理围栏面切片：动态适配底层可能是 4326 或 3857 的情况
 			mvtQuery = `
                 WITH tilegeom AS (
                     SELECT id, name, 
-                           ST_AsMVTGeom(ST_Transform(area, 3857), ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 4096, 64, true) AS geom
+                           ST_AsMVTGeom(
+                               ST_Transform(area, 3857), 
+                               ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
+                               4096, 64, true
+                           ) AS geom
                     FROM fences
-                    WHERE area && ST_Transform(ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 4326)
+                    WHERE area && ST_Transform(ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), ST_SRID(area))
                 )
                 SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
 
 		case "roads":
-			// 🎯 目标明确：只显示最核心的高速路线
-			filterSQL := "WHERE highway = 'motorway'"
+			// 🎯 放开限制：允许高速、快速路、主干道、次干道同时下发，确保市区格子不掉空洞
+			filterSQL := "WHERE highway IN ('motorway', 'trunk', 'primary', 'secondary')"
 
-			// 🎯 根据缩放层级（z）动态抽稀节点，防止低层级瓦片过载，确保高层级精细度
+			// 🎯 极简动态拓扑抽稀（Tolerance），根据 Zoom 层级对 3857 的米制单位做降噪
 			var tolerance float64
 			switch {
 			case z <= 11:
-				tolerance = 40.0 // 视角很高时，大幅度抽稀线条节点
+				tolerance = 50.0 // 视角极高时，节点间距小于50米线条合并
 			case z <= 14:
-				tolerance = 10.0 // 中等视角，适度抽稀
+				tolerance = 10.0 // 中等视角，10米抽稀
 			default:
-				tolerance = 0.0 // 放大到细节时，保留原始最高精度
+				tolerance = 0.0 // 高清层级，保留原始精度
 			}
 
+			// 🎯 完美 3857 碰撞矩阵：因为 way 已经是 3857，取消所有 transform 转换，直接全速对撞 bbox
 			if tolerance > 0.0 {
 				mvtQuery = fmt.Sprintf(`
-            WITH tilegeom AS (
-                SELECT osm_id, name, highway, 
-                       ST_AsMVTGeom(
-                           ST_SimplifyPreserveTopology(way, %f), 
-                           ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
-                           4096, 64, true
-                       ) AS geom
-                FROM planet_osm_line
-                %s 
-                  AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
-            )
-            SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`, tolerance, filterSQL)
+                    WITH tilegeom AS (
+                        SELECT osm_id, name, highway, 
+                               ST_AsMVTGeom(
+                                   ST_SimplifyPreserveTopology(way, %f), 
+                                   ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
+                                   4096, 64, true
+                               ) AS geom
+                        FROM planet_osm_line
+                        %s 
+                          AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
+                    )
+                    SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`, tolerance, filterSQL)
 			} else {
 				mvtQuery = fmt.Sprintf(`
-            WITH tilegeom AS (
-                SELECT osm_id, name, highway, 
-                       ST_AsMVTGeom(
-                           way, 
-                           ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
-                           4096, 64, true
-                       ) AS geom
-                FROM planet_osm_line
-                %s 
-                  AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
-            )
-            SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`, filterSQL)
+                    WITH tilegeom AS (
+                        SELECT osm_id, name, highway, 
+                               ST_AsMVTGeom(
+                                   way, 
+                                   ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
+                                   4096, 64, true
+                               ) AS geom
+                        FROM planet_osm_line
+                        %s 
+                          AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
+                    )
+                    SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`, filterSQL)
 			}
 
 		default:
@@ -471,6 +488,7 @@ func main() {
 		var tileData []byte
 		err := db.QueryRow(mvtQuery, z, x, y).Scan(&tileData)
 
+		// 🎯 核心防错：即使没有数据，也不要直接断掉连接，返回 204 让前端优雅跳过该格子
 		if err != nil || len(tileData) == 0 {
 			w.Header().Del("Content-Type")
 			w.WriteHeader(http.StatusNoContent)
@@ -478,7 +496,7 @@ func main() {
 		}
 
 		w.Header().Set("Content-Type", "application/vnd.mapbox-vector-tile")
-		w.Header().Set("Cache-Control", "public, max-age=1800")
+		w.Header().Set("Cache-Control", "public, max-age=600") // 赋予 10 分钟本地瓦片缓存，减小频繁拖动对 DB 造成的瞬时压力
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(tileData)
 	})

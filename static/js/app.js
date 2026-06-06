@@ -102,47 +102,36 @@ const App = {
             // ==========================================
             
             // 2.1 基础路网线层
-            this.map.addLayer({
-                'id': 'roads-layer-line', 
-                'type': 'line', 
-                'source': 'roads-mvt-source', 
-                'source-layer': 'roads', // 严格对齐后端图层名
-                'layout': { 
-                    'line-join': 'round', 
-                    'line-cap': 'round',
-                    'visibility': 'visible'
-                },
-                'paint': {
-                    // 🎯 优化：根据道路等级（highway）赋予不同的颜色，建立色彩层级
-                        'line-color': [
-                        'match', ['get', 'highway'],
-                        'motorway', '#00FFCC',  // 高速 - 青绿
-                        '#004422'               // 缺省兜底值
-                    ],
-                    // 🎯 优化：结合当前 Zoom 级别与道路类型双重控制宽度，防止低层级线条团塞
-                    'line-width': [
-                        'interpolate', ['linear'], ['zoom'], 
-                        9, [
-                            'match', ['get', 'highway'],
-                            'motorway', 1.5, 'primary', 1.0, 0.2
-                        ],
-                        14, [
-                            'match', ['get', 'highway'],
-                            'motorway', 4.0, 'primary', 3.0, 1.0
-                        ],
-                        18, [
-                            'match', ['get', 'highway'],
-                            'motorway', 10.0, 'primary', 8.0, 2.5
-                        ]
-                    ],
-                    // 🎯 优化：低层级适度降低透明度，保障整体感知度
-                    'line-opacity': [
-                        'interpolate', ['linear'], ['zoom'],
-                        9, 0.3,
-                        13, 0.95
-                    ]
-                }
-            });
+            // 1. 基础道路线层
+this.map.addLayer({
+    'id': 'roads-layer-line', 
+    'type': 'line', 
+    'source': 'roads-mvt-source', 
+    'source-layer': 'roads', // 👈 必须与后端完全相同！
+    'layout': { 
+        'line-join': 'round', 
+        'line-cap': 'round'
+    },
+    'paint': {
+        // 针对放开后的四种道路，赋予明显的颜色分级
+        'line-color': [
+            'match', ['get', 'highway'],
+            'motorway', '#00FFCC',  // 高速：荧光青
+            'trunk', '#00FF88',     // 城市快速路：荧光绿
+            'primary', '#00AA66',   // 主干道：深绿
+            'secondary', '#006644', // 次干道：暗绿
+            '#004422'               // 兜底
+        ],
+        // 适当加粗线宽，防止低层级由于地图分辨率大导致线条隐形
+        'line-width': [
+            'interpolate', ['linear'], ['zoom'], 
+            9, 2.0,
+            14, 5.0,
+            18, 9.0
+        ],
+        'line-opacity': 1.0 // 彻底放弃透明度隐藏，100%全透显现
+    }
+});
 
             // 2.2 道路名称文本标注层
             this.map.addLayer({
