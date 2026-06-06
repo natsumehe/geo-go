@@ -93,7 +93,7 @@ const App = {
             // 3. 🎯 全量单兵精细化实时轨迹追踪层 (GeoJSON 锁定槽)
             this.map.addSource('device-track', {
                 'type': 'geojson',
-                'data': { 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': [] } } device-track
+                'data': { 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': [] } } 
             });
             this.map.addLayer({
                 'id': 'track-layer', 'type': 'line', 'source': 'device-track',
