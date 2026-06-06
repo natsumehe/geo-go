@@ -2,67 +2,38 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>沈海高速路网与地理围栏实时大屏</title>
-    <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
-    <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PostGIS 空间高频调度中枢大屏</title>
+    <link href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css" rel="stylesheet">
+    <script src="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.js"></script>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #0d0f12; color: #fff; overflow: hidden; }
-        
-        /* 地图全屏容器 */
-        #map { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
-        
-        /* 顶部状态条 */
-        .top-bar { position: absolute; top: 15px; left: 15px; z-index: 10; background: rgba(13, 15, 18, 0.85); padding: 12px 20px; border-radius: 6px; border: 1px solid #1f242c; backdrop-filter: blur(5px); }
-        .top-bar h1 { font-size: 16px; margin-bottom: 4px; color: #00FFCC; letter-spacing: 1px; }
-        .top-bar p { font-size: 12px; color: #8a96a3; }
-
-        /* 左侧采集端卡片滑块 */
-        .sidebar { position: absolute; bottom: 30px; left: 15px; z-index: 10; width: 300px; max-height: 40vh; background: rgba(13, 15, 18, 0.85); border-radius: 6px; border: 1px solid #1f242c; backdrop-filter: blur(5px); display: flex; flex-direction: column; }
-        .sidebar-title { padding: 12px; font-size: 12px; font-weight: bold; color: #8a96a3; border-bottom: 1px solid #1f242c; letter-spacing: 0.5px; }
-        #device-swiper { overflow-y: auto; flex: 1; padding: 8px; }
-        .swiper-slide { background: #161a22; border: 1px solid #242b37; padding: 10px; margin-bottom: 8px; border-radius: 4px; cursor: pointer; transition: all 0.2s ease; }
-        .swiper-slide:hover { border-color: #00FFCC; }
-        .swiper-slide.active { background: #1c2330; border-color: #00FFCC; box-shadow: inset 0 0 8px rgba(0,255,204,0.2); }
-        .slide-tag { font-size: 10px; color: #00FFCC; margin-bottom: 2px; text-transform: uppercase; }
-        .slide-id { font-size: 13px; font-family: monospace; font-weight: bold; }
-
-        /* 右侧实时违法闯区存证日志 */
-        .alarm-panel { position: absolute; top: 15px; right: 15px; z-index: 10; width: 320px; max-height: 85vh; background: rgba(26, 10, 10, 0.85); border-radius: 6px; border: 1px solid #4a1515; backdrop-filter: blur(5px); display: flex; flex-direction: column; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
-        .alarm-title { padding: 12px; font-size: 13px; font-weight: bold; color: #ff5555; border-bottom: 1px solid #4a1515; background: rgba(255,85,85,0.05); }
-        #alarm-logs { overflow-y: auto; flex: 1; padding: 10px; }
-        .log-item { background: rgba(20, 10, 10, 0.6); border-left: 3px solid #ff3333; padding: 10px; margin-bottom: 8px; border-radius: 0 4px 4px 0; font-size: 12px; line-height: 1.5; animation: fadeIn 0.3s ease; }
-        
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(-10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #0b1522; font-family: "Helvetica Neue", Arial, sans-serif; }
+        #map { width: 100%; height: 100%; position: absolute; top: 0; left: 0; }
+        .control-panel { position: absolute; top: 20px; left: 20px; z-index: 10; background: rgba(11, 21, 34, 0.85); border: 1px solid #1e3a5f; padding: 15px; border-radius: 6px; color: #fff; width: 280px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); backdrop-filter: blur(5px); }
+        h3 { margin: 0 0 10px 0; font-size: 16px; color: #00d2ff; letter-spacing: 1px; border-bottom: 1px solid #1e3a5f; padding-bottom: 5px; }
+        .device-select { width: 100%; background: #112233; border: 1px solid #224466; color: #fff; padding: 8px; border-radius: 4px; outline: none; cursor: pointer; }
+        .alarm-container { position: absolute; top: 20px; right: 20px; z-index: 10; background: rgba(11, 21, 34, 0.85); border: 1px solid #ff3b30; padding: 15px; border-radius: 6px; color: #fff; width: 320px; max-height: 400px; overflow-y: auto; box-shadow: 0 4px 20px rgba(255,0,0,0.15); backdrop-filter: blur(5px); }
+        .alarm-item { background: rgba(255, 59, 48, 0.1); border-left: 4px solid #ff3b30; padding: 8px 12px; margin-bottom: 8px; border-radius: 0 4px 4px 0; font-size: 13px; animation: fadeIn 0.3s ease-out; }
+        .alarm-time { color: #8e8e93; float: right; font-size: 11px; margin-top: 2px; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
     </style>
 </head>
 <body>
 
     <div id="map"></div>
 
-    <div class="top-bar">
-        <h1>沈海高速路网（嘉定段）指挥中心</h1>
-        <p id="status">正在构建 WebGL 空间画布...</p>
-        <p id="device-info" style="font-family: monospace; margin-top: 4px; color: #5c6975; font-size: 10px;"></p>
+    <div class="control-panel">
+        <h3>🛰️ 活跃采集终端发现</h3>
+        <select id="deviceList" class="device-select" onchange="switchDeviceHistory(this.value)">
+            <option value="">-- 选择设备查看历史轨迹 --</option>
+        </select>
     </div>
 
-    <div class="sidebar">
-        <div class="sidebar-title">📡 动态轨迹追踪列表 (3000ms 轮询)</div>
-        <div id="device-swiper">
-            <div style="font-size:12px; color:#666; padding:8px;">正在等待同步源...</div>
-        </div>
+    <div class="alarm-container">
+        <h3 style="color: #ff3b30; border-bottom: 1px solid #551a1a;">🚨 空间越界碰撞实时存证</h3>
+        <div id="alarmLog"></div>
     </div>
 
-    <div class="alarm-panel">
-        <div class="alarm-title">🚨 实时电子围栏违规闯区存证 (WS 异步流)</div>
-        <div id="alarm-logs">
-            <div style="font-size:12px; color:#666; padding:8px; text-align:center;">暂无违规穿行存证事件</div>
-        </div>
-    </div>
-
-    <script src="/static/app.js"></script>
+    <script src="static/js/app.js"></script>
 </body>
 </html>

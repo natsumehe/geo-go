@@ -1,271 +1,211 @@
-const App = {
-    map: null,
-    currentID: null,
-    pollTimer: null,
-    id: null,
+// ==========================================
+// 🛰️ 生产级网络拓扑自适应总线配置
+// ==========================================
+const isHTTPS = window.location.protocol === 'https:';
+// 动态拼装后端基础 API 根路径与 WebSocket 安全加密链路
+const BASE_URL  = `${window.location.protocol}//${window.location.host}`;
+const WS_URL    = `${isHTTPS ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
+const MVT_URL   = `${BASE_URL}/tiles`;
 
-    // 上海物理数据有效边界
-    shanghaiBounds: [
-        [120.85, 30.65], 
-        [122.15, 31.95]  
-    ],
-
-    getDeviceID() {
-        let id = localStorage.getItem('geo_device_id');
-        if (!id) {
-            const ua = navigator.userAgent;
-            let model = "Unknown_Device";
-            if (/iPhone/.test(ua)) model = "iPhone";
-            else if (/Android/.test(ua)) {
-                const match = ua.match(/Android [\d._]+; ([^;]+)\)/);
-                model = match ? match[1].replace(/\s+/g, '_') : "Android";
+// ==========================================
+// 🗺️ 初始化地图物理渲染引擎
+// ==========================================
+// 这里选用的是不需要 Token 的开源底图样式作为底色衬托，防止公网部署因 Token 失效导致大屏黑屏
+const map = new mapboxgl.Map({
+    container: 'map',
+    style: {
+        "version": 8,
+        "sources": {
+            "osm-tiles": {
+                "type": "raster",
+                "tiles": [
+                    "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                    "https://b.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                ],
+                "tileSize": 256
             }
-            id = `${model}_${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-            localStorage.setItem('geo_device_id', id);
-        }
-        return id;
+        },
+        "layers": [{
+            "id": "osm-layer",
+            "type": "raster",
+            "source": "osm-tiles",
+            "minzoom": 0,
+            "maxzoom": 19
+        }]
     },
+    center: [121.50, 31.23], // 默认锚定中心点
+    zoom: 11,
+    pitch: 45 // 给予大屏 45 度极客空间俯仰角
+});
 
-    init() {
-        const mapEl = document.getElementById('map');
-        if (mapEl) {
-            mapEl.style.width = '100vw';
-            mapEl.style.height = '100vh';
-            mapEl.style.position = 'absolute';
-            mapEl.style.backgroundColor = '#0a0a0a'; 
+// ==========================================
+// ⚡ 空间图层资产挂载（MVT 动态矢量瓦片双通道）
+// ==========================================
+map.on('load', () => {
+	console.log("🟢 渲染引擎初始化就绪，开始挂载 PostGIS 动态矢量管道...");
+
+    // 🎯 图层通道 1：地理电子围栏面要素 (fences)
+    map.addSource('fences_mvt', {
+        type: 'vector',
+        tiles: [`${MVT_URL}/fences/{z}/{x}/{y}.mvt`]
+    });
+    map.addLayer({
+        id: 'fences-layer',
+        type: 'fill',
+        source: 'fences_mvt',
+        'source-layer': 'fences',
+        paint: {
+            'fill-color': '#ff3b30',
+            'fill-opacity': 0.25,
+            'fill-outline-color': '#ff3b30'
         }
+    });
 
-        this.id = this.getDeviceID();
-        const devInfo = document.getElementById('device-info');
-        if (devInfo) devInfo.innerText = `DEVICE ID: ${this.id}`;
-        
-        this.initMap();
-        this.startDiscovery();
-        this.initWebSocket();
-    },
+    // 🎯 图层通道 2：沈海高速特定切片路网 (roads)
+    map.addSource('roads_mvt', {
+        type: 'vector',
+        tiles: [`${MVT_URL}/roads/{z}/{x}/{y}.mvt`]
+    });
+    map.addLayer({
+        id: 'roads-layer',
+        type: 'line',
+        source: 'roads_mvt',
+        'source-layer': 'roads',
+        layout: {
+            'line-join': 'round',
+            'line-cap': 'round'
+        },
+        paint: {
+            'line-color': '#00d2ff',
+            'line-width': 4,
+            'line-blur': 1 // 赋予高速路网极光发光特效
+        }
+    });
 
-    initMap() {
-        this.map = new maplibregl.Map({
-            container: 'map',
-            // 🎯 精准空降：直接定格在嘉定这段沈海高速的正上方
-            center: [121.174, 31.420],    
-            zoom: 13,                       
-            minZoom: 9,                                         
-            maxZoom: 18,                    
-            maxBounds: this.shanghaiBounds, 
-            pitch: 0,                      
-            style: {
-                "version": 8,
-                "sources": {},
-                "layers": [
-                    {
-                        "id": "pure-dark-background",
-                        "type": "background",
-                        "paint": { "background-color": "#0d0f12" }
-                    }
-                ]
-                // 💡 提示：如果以后一定要显示文字，需在此处配置 "glyphs": "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf"
-            }
-        });
+    // 动态拉取当前数据库已激活的车辆/采集端下拉列表
+    initDeviceDropdown();
+    // 拉取历史存证的前 10 条报警日志
+    loadHistoricalAlarms();
+    // 激活全双工 WSS 实时加密总线
+    connectWebSocket();
+});
 
-        this.map.on('error', (e) => {
-            console.error("🚨 [WebGL 引擎异常]：", e.error?.message || e);
-        });
+// ==========================================
+// 📶 业务逻辑：动态发现采集端设备列表
+// ==========================================
+function initDeviceDropdown() {
+    fetch(`${BASE_URL}/list`)
+        .then(res => res.json())
+        .then(devices => {
+            const select = document.getElementById('deviceList');
+            if (!devices) return;
+            devices.forEach(id => {
+                const opt = document.createElement('option');
+                opt.value = id;
+                opt.textContent = `设备 ID: ${id}`;
+                select.appendChild(opt);
+            });
+        })
+        .catch(err => console.error('❌ 获取活跃采集端失败:', err));
+}
 
-        this.map.on('load', () => {
-            console.log("🟢 WebGL 空间画布就绪，开始加载 MVT 管道...");
-            
-            const mvtHost = window.location.protocol + '//' + window.location.host;
+// ==========================================
+// 📶 业务逻辑：点查并绘制选中设备的历史轨迹
+// ==========================================
+function switchDeviceHistory(deviceId) {
+    if (!deviceId) return;
 
-            // ==========================================
-            // 🛰️ 1. 数据源配置：MVT 管道
-            // ==========================================
-            this.map.addSource('roads-mvt-source', {
-                'type': 'vector',
-                'tiles': [ mvtHost + '/tiles/roads/{z}/{x}/{y}.mvt' ],
-                'minzoom': 9,
-                'maxzoom': 18
+    fetch(`${BASE_URL}/history?id=${deviceId}`)
+        .then(res => res.json())
+        .then(geoJSON => {
+            // 防御清除机制：如果已经存在历史轨迹图层，先将其卸载掉
+            if (map.getLayer('history-line')) map.removeLayer('history-line');
+            if (map.getSource('history_source')) map.removeSource('history_source');
+
+            // 挂载动态点查出来的 GeoJSON 线串
+            map.addSource('history_source', {
+                type: 'geojson',
+                data: geoJSON
             });
 
-            this.map.addSource('fences-mvt-source', {
-                'type': 'vector',
-                'tiles': [ mvtHost + '/tiles/fences/{z}/{x}/{y}.mvt' ]
-            });
-
-            // ==========================================
-            // 🎨 2. 图层渲染：沈海高速与地理围栏
-            // ==========================================
-            
-            // 2.1 核心路网线层（已通过 ST_Transform 强洗对齐）
-            this.map.addLayer({
-                'id': 'roads-layer-line', 
-                'type': 'line', 
-                'source': 'roads-mvt-source', 
-                'source-layer': 'roads', // 严格对齐后端 ST_AsMVT 中的第一个参数图层标识
-                'layout': { 
-                    'line-join': 'round', 
-                    'line-cap': 'round'
-                },
-                'paint': {
-                    'line-color': '#00FFCC', // 荧光青色
-                    'line-width': [
-                        'interpolate', ['linear'], ['zoom'], 
-                        9, 4.0,
-                        14, 7.0,
-                        18, 12.0
-                    ],
-                    'line-opacity': 1.0
+            map.addLayer({
+                id: 'history-line',
+                type: 'line',
+                source: 'history_source',
+                paint: {
+                    'line-color': '#ffcc00',
+                    'line-width': 5,
+                    'line-dasharray': [2, 1] // 虚线流动动效衬托
                 }
             });
 
-            // 🎯 已移除引发 glyphs 报错的 roads-layer-label 文本层，防止引擎死锁
+            // 智能纠偏：自动将地图视口平滑弹射移动到当前车辆的轨迹中心点
+            if (geoJSON.coordinates && geoJSON.coordinates.length > 0) {
+                const lastIdx = geoJSON.coordinates.length - 1;
+                map.flyTo({
+                    center: geoJSON.coordinates[lastIdx],
+                    zoom: 13,
+                    essential: true
+                });
+            }
+        })
+        .catch(err => console.error('❌ 点查历史时序数据失败:', err));
+}
 
-            // 2.2 地理围栏面层与边界线
-            this.map.addLayer({
-                'id': 'fences-layer-fill', 'type': 'fill', 'source': 'fences-mvt-source', 'source-layer': 'fences',
-                'paint': { 'fill-color': '#007cbf', 'fill-opacity': 0.2 }
-            });
-            this.map.addLayer({
-                'id': 'fences-layer-outline', 'type': 'line', 'source': 'fences-mvt-source', 'source-layer': 'fences',
-                'paint': { 'line-color': '#00d2ff', 'line-width': 2 }
-            });
+// ==========================================
+// 📶 业务逻辑：异步拉取已有报警存证历史
+// ==========================================
+function loadHistoricalAlarms() {
+    fetch(`${BASE_URL}/alarms`)
+        .then(res => res.json())
+        .then(logs => {
+            if (!logs) return;
+            // 倒序排列，保证最新时间发生的在最上方
+            logs.forEach(log => appendAlarmDOM(log.driver, log.fence, log.time));
+        })
+        .catch(err => console.error('❌ 拉取报警存证失败:', err));
+}
 
-            // ==========================================
-            // 🛰️ 3. 业务图层：实时动态追踪层
-            // ==========================================
-            this.map.addSource('device-track', {
-                'type': 'geojson',
-                'data': { 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': [] } }
-            }); 
-            this.map.addLayer({
-                'id': 'track-layer', 'type': 'line', 'source': 'device-track',
-                'layout': { 'line-join': 'round', 'line-cap': 'round' },
-                'paint': { 'line-color': '#ffea00', 'line-width': 4 } 
-            });
+// ==========================================
+// 🔀 核心总线：生产级加密 WSS 全双工通信器
+// ==========================================
+function connectWebSocket() {
+    console.log(`🔒 正在向安全网关发起握手链路: ${WS_URL}`);
+    const ws = new WebSocket(WS_URL);
 
-            this.map.addSource('device-pointer', {
-                'type': 'geojson',
-                'data': { 'type': 'Feature', 'geometry': { 'type': 'Point', 'coordinates': [0, 0] } }
-            });
-            this.map.addLayer({
-                'id': 'pointer-layer', 'type': 'circle', 'source': 'device-pointer',
-                'paint': { 'circle-radius': 7, 'circle-color': '#ff3333', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' }
-            });
-        });
-    },
-
-    startDiscovery() {
-        const refreshList = async () => {
-            try {
-                const res = await fetch('/list');
-                const devices = await res.json();
-                this.renderCards(devices);
-            } catch (e) { console.error("Discovery failed", e); }
-        };
-        refreshList();
-        setInterval(refreshList, 5000); 
-    },
-
-    renderCards(devices) {
-        const container = document.getElementById('device-swiper');
-        if (!container) return;
-        const validDevices = devices.filter(d => d && d.length > 0);
-        if (validDevices.length === 0) {
-            container.innerHTML = '<div style="font-size:12px; color:#666; padding:8px;">等待数据库同步...</div>';
-            return;
-        }
-        container.innerHTML = validDevices.map(id => `
-            <div class="swiper-slide ${id === this.currentID ? 'active' : ''}" onclick="App.selectDevice('${id}')">
-                <div class="slide-tag">已发现采集端</div>
-                <div class="slide-id">${id}</div>
-            </div>
-        `).join('');
-
-        if (!this.currentID && validDevices.length > 0) {
-            this.selectDevice(validDevices[0]);
-        }
-    },
-
-    selectDevice(id) {
-        this.currentID = id;
-        document.querySelectorAll('.swiper-slide').forEach(s => {
-            const idAttr = s.querySelector('.slide-id')?.innerText;
-            s.classList.toggle('active', idAttr === id);
-        });
-
-        if (this.pollTimer) clearInterval(this.pollTimer);
-        const track = () => this.fetchUpdate(id);
-        track();
-        this.pollTimer = setInterval(track, 3000); 
-    },
-
-    async fetchUpdate(id) {
+    ws.onmessage = (event) => {
         try {
-            const res = await fetch(`/history?id=${encodeURIComponent(id)}`);
-            const data = await res.json();
-            if (data.coordinates && data.coordinates.length > 0) {
-                this.draw(data.coordinates.slice(-100)); 
+            const data = JSON.parse(event.data);
+            if (data.type === 'alarm') {
+                const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+                // 触发实时大警消息轰炸并写入 DOM 
+                appendAlarmDOM(data.driver, data.fence, nowTime);
             }
-        } catch (e) { console.error("Track error", e); }
-    },
-
-    draw(coordinates) {
-        if (!coordinates || coordinates.length === 0 || !this.map) return;
-        const lastPoint = coordinates[coordinates.length - 1];
-
-        const lng = lastPoint[0];
-        const lat = lastPoint[1];
-        const b = this.shanghaiBounds;
-        if (lng < b[0][0] || lng > b[1][0] || lat < b[0][1] || lat > b[1][1]) {
-            console.warn(`⚠️ 拦截到越界轨迹坐标: [${lng}, ${lat}]`);
-            return; 
+        } catch (e) {
+			// 过滤心跳或非标准协议包
         }
+    };
 
-        const trackSource = this.map.getSource('device-track');
-        if (trackSource) {
-            trackSource.setData({
-                type: 'Feature',
-                geometry: { type: 'LineString', coordinates: coordinates }
-            });
-        }
-        
-        const pointerSource = this.map.getSource('device-pointer');
-        if (pointerSource) {
-            pointerSource.setData({
-                type: 'Feature',
-                geometry: { type: 'Point', coordinates: lastPoint }
-            });
-        }
-        this.map.easeTo({ center: lastPoint, duration: 500 });
-    },
+	// 生产级高可用：遭遇恶劣公网环境网络物理闪断时，每隔 5000ms 自动无限重连兜底
+    ws.onclose = () => {
+        console.warn('⚠️ WSS 生产总线断开，正在尝试启动边缘自愈重连...');
+        setTimeout(connectWebSocket, 5000);
+    };
 
-    initWebSocket() {
-        const wsProtocol = window.location.protocol === "https:" ? "wss://" : "ws://";
-        const wsUrl = wsProtocol + window.location.host + "/ws";
-        const ws = new WebSocket(wsUrl);
+    ws.onerror = (err) => {
+        console.error('❌ WSS 链路异常阻断:', err);
+    };
+}
 
-        ws.onopen = () => {
-            document.getElementById('status').innerText = "系统运行正常 (🟢 实时链路通畅)";
-        };
-
-        ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                if (data.type === 'alarm') {
-                    const logContainer = document.getElementById('alarm-logs');
-                    const item = document.createElement('div');
-                    item.className = 'log-item';
-                    item.innerHTML = `<strong>🚨 违规闯区存证</strong><br>对象: ${data.driver}<br>区域: ${data.fence}`;
-                    logContainer.insertBefore(item, logContainer.firstChild);
-                }
-            } catch (e) { console.log(event.data); }
-        };
-
-        ws.onclose = () => {
-            document.getElementById('status').innerText = "链路意外中断 (🔴 自动重连中...)";
-            setTimeout(() => this.initWebSocket(), 5000);
-        };
-    }
-};
-
-App.init();
+// 向右侧控制台插入报警条目的公用渲染组件
+function appendAlarmDOM(driver, fence, time) {
+    const logContainer = document.getElementById('alarmLog');
+    const item = document.createElement('div');
+    item.className = 'alarm-item';
+    item.innerHTML = `
+        <span class="alarm-time">${time}</span>
+        <strong>🚨 入侵触发:</strong> 设备 <span>${driver}</span> 非法穿行于 <span>${fence}</span> 监控区内！
+    `;
+    // 始终把最新回传的报警记录推至视窗最顶端
+    logContainer.insertBefore(item, logContainer.firstChild);
+}

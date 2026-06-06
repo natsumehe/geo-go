@@ -332,8 +332,6 @@ func FencesHandle(w http.ResponseWriter, r *http.Request) {
 func main() {
 	connStr := os.Getenv("DB_URL")
 	if connStr == "" {
-		// 💡 提示：如果推到阿里云生产环境，请记得在此处或环境变量中追加云数据库的 SSL 认证后缀
-		// 示例: &sslmode=verify-ca&sslrootcert=/etc/ssl/certs/alicloud-rds-ca.pem
 		connStr = "postgres://docker:floder123@172.17.0.1:5432/gis_db?sslmode=disable"
 	}
 	redisAddr := os.Getenv("REDIS_URL")
@@ -359,7 +357,7 @@ func main() {
 		time.Sleep(2 * time.Second)
 	}
 
-	// 🎯 新增安全守护：定期清理死掉采集端的卡尔曼历史数据，防止 OOM 内存泄漏
+	// 🎯 定期清理死掉采集端的卡尔曼历史数据，防止 OOM 内存泄漏
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		for range ticker.C {
@@ -432,12 +430,9 @@ func main() {
                 SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
 
 		case "roads":
-			// 🎯 锁死你的目标沈海高速线段 osm_id
 			filterSQL := "WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)"
 
-			// 🎯 阿里云生产级纠偏重构核心：
-			// 移除可能引起优化器边界混乱的动态 ST_SRID(way) 包装。
-			// 针对 osm2pgsql 导入的标准 Web 墨卡托路网，直接将瓦片信封固定在 3857 网格进行边界相交判定，100% 压榨物理空间索引。
+			// 🎯 精准锁死路网 3857 边界相交判定，彻底激活阿里云 PostGIS 空间索引
 			mvtQuery = fmt.Sprintf(`
                 WITH tilegeom AS (
                     SELECT osm_id, 
@@ -446,7 +441,7 @@ func main() {
                            ST_AsMVTGeom(
                                ST_Transform(way, 3857), 
                                ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
-                               4096, 64, true 
+                               4096, 64, true
                            ) AS geom
                     FROM planet_osm_line
                     %s 
@@ -478,9 +473,7 @@ func main() {
 	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
 		staticDir = "./static"
 	}
-	fs := http.FileServer(http.Dir(staticDir))
-	http.Handle("/static/", http.StripPrefix("/static/", fs))
-	http.Handle("/", fs)
+	http.Handle("/", http.FileServer(http.Dir(staticDir)))
 
 	go func() {
 		fmt.Println("🔓 HTTP 监控主服务已建立: 8080")
