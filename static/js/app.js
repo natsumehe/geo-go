@@ -7,10 +7,10 @@ const App = {
     pollTimer: null,
     id: null,
 
-    // 🎯 核心修复：扩展上海及周边外延边界，确保支持到 31.95°N（全面解锁崇明岛北部与江堤路区域）
+    // 🎯 核心扩展：覆盖 31.95°N，确保崇明岛北部及江堤路等外延数据完全处于可视视野内
     shanghaiBounds: [
-        [120.85, 30.65], // 西南角扩展
-        [122.15, 31.95]  // 东北角扩展，完全包容 31.86°N 的数据
+        [120.85, 30.65], // 西南角
+        [122.15, 31.95]  // 东北角
     ],
 
     // 为当前浏览器窗口生成全局唯一的设备指纹
@@ -45,11 +45,11 @@ const App = {
             container: 'map',
             center: [121.4737, 31.2304],    
             zoom: 12,                       
-            minZoom: 5, // 💡 降低最小缩放限制，方便在视野内全局寻找图层                     
+            minZoom: 5,                     
             maxZoom: 18,                    
             maxBounds: this.shanghaiBounds, 
             pitch: 45,                      
-            // 采用标准科技暗色调底图，完美烘托荧光绿物理路网与橙色轨迹
+            // 采用标准科技暗色调底图
             style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
         });
 
@@ -79,26 +79,31 @@ const App = {
                 'tiles': [ mvtHost + '/tiles/roads/{z}/{x}/{y}.mvt' ]
             });
             this.map.addLayer({
-                'id': 'roads-layer-line', 'type': 'line', 'source': 'roads-mvt-source', 
-                // 🎯 严格校验：确保与 Go 代码中的 ST_AsMVT(..., 'roads') 命名空间绝对对齐
-                'source-layer': 'roads',
-                'layout': { 'line-join': 'round', 'line-cap': 'round' },
+                'id': 'roads-layer-line', 
+                'type': 'line', 
+                'source': 'roads-mvt-source', 
+                'source-layer': 'roads', // 🎯 严格对齐 Go 后端命名通道
+                'layout': { 
+                    'line-join': 'round', 
+                    'line-cap': 'round',
+                    'visibility': 'visible'
+                },
                 'paint': {
-                    'line-color': '#2ECC71', // 荧光绿物理路网
-                    'line-width': ['interpolate', ['linear'], ['zoom'], 10, 1.5, 15, 3.5, 18, 6.0],
-                    'line-opacity': 0.85     // 适当提高不透明度增加辨识度
+                    'line-color': '#00FF88', // 超亮荧光绿，增强暗色底图穿透力
+                    'line-width': ['interpolate', ['linear'], ['zoom'], 10, 2.0, 15, 4.0, 18, 8.0],
+                    'line-opacity': 0.95
                 }
-            }, 'fences-layer-outline'); // 放置于围栏下方，防重叠视差
+            }); // 👈 核心修复：移除尾部参照物参数，强制将其渲染在 WebGL 画布的最顶层
 
             // 3. 🎯 全量单兵精细化实时轨迹追踪层 (GeoJSON 锁定槽)
             this.map.addSource('device-track', {
                 'type': 'geojson',
-                'data': { 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': [] } } 
-            });
+                'data': { 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': [] } }
+            }); // 👈 核心修复：移除了末尾残留的拼写碎屑
             this.map.addLayer({
                 'id': 'track-layer', 'type': 'line', 'source': 'device-track',
                 'layout': { 'line-join': 'round', 'line-cap': 'round' },
-                'paint': { 'line-color': '#ffea00', 'line-width': 4 } // 亮黄色轨迹主线
+                'paint': { 'line-color': '#ffea00', 'line-width': 4 } 
             });
 
             this.map.addSource('device-pointer', {
