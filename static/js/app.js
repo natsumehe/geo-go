@@ -10,8 +10,8 @@ const MVT_URL   = `${BASE_URL}/tiles`;
 // ==========================================
 // 🗺️ 初始化地图物理渲染引擎
 // ==========================================
-// 这里选用的是不需要 Token 的开源底图样式作为底色衬托，防止公网部署因 Token 失效导致大屏黑屏
-const map = new mapboxgl.Map({
+
+const map = new maplibregl.Map({
     container: 'map',
     style: {
         "version": 8,
