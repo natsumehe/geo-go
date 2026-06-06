@@ -478,7 +478,9 @@ func main() {
 	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
 		staticDir = "./static"
 	}
-	http.Handle("/", http.FileServer(http.Dir(staticDir)))
+	fs := http.FileServer(http.Dir(staticDir))
+	http.Handle("/static/", http.StripPrefix("/static/", fs))
+	http.Handle("/", fs)
 
 	go func() {
 		fmt.Println("🔓 HTTP 监控主服务已建立: 8080")
