@@ -394,13 +394,17 @@ func main() {
 				SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
 
 		case "roads":
-			// 🛰️ 注意：osm2pgsql 导入的数据默认是 3857 墨卡托，因此 way 不需要重复做 ST_Transform
 			mvtQuery = `
 				WITH tilegeom AS (
-					SELECT osm_id, name, highway, ST_AsMVTGeom(way, ST_TileEnvelope($1, $2, $3), 4096, 64, true) AS geom
+					SELECT 
+						osm_id, 
+						name, 
+						highway, 
+						ST_AsMVTGeom(way, ST_TileEnvelope($1, $2, $3), 4096, 64, true) AS geom
 					FROM planet_osm_line
 					WHERE highway IS NOT NULL 
-					  AND way && ST_Transform(ST_TileEnvelope($1, $2, $3), 4326)
+					-- 极速 BBOX 相交检索
+					AND way && ST_TileEnvelope($1, $2, $3)
 				)
 				SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`
 
