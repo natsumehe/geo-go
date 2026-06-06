@@ -114,12 +114,10 @@ const App = {
                 },
                 'paint': {
                     // 🎯 优化：根据道路等级（highway）赋予不同的颜色，建立色彩层级
-                    'line-color': [
+                        'line-color': [
                         'match', ['get', 'highway'],
                         'motorway', '#00FFCC',  // 高速 - 青绿
-                        'primary', '#00FF88',   // 主干道 - 荧光绿
-                        'secondary', '#00AA66', // 次干道 - 间色绿
-                        '#004422'               // 其它支路/小路 - 暗绿
+                        '#004422'               // 缺省兜底值
                     ],
                     // 🎯 优化：结合当前 Zoom 级别与道路类型双重控制宽度，防止低层级线条团塞
                     'line-width': [

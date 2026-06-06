@@ -419,42 +419,48 @@ func main() {
                 SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
 
 		case "roads":
-			// 🎯 【精准瘦身】：强制只过滤 OSM 中最重要的前三种核心道路
-			// 彻底杜绝 residential, service, tertiary 等海量支路对数据库的性能轰炸
-			filterSQL := "WHERE highway IN ('motorway', 'trunk', 'primary')"
+			// 🎯 目标明确：只显示最核心的高速路线
+			filterSQL := "WHERE highway = 'motorway'"
 
-			// 🎯 空间几何简化容差设置
-			// 即使只有三种路，在低缩放级别（如 zoom 9、10）看全上海时，线条节点依旧极多，必须做抽稀
+			// 🎯 根据缩放层级（z）动态抽稀节点，防止低层级瓦片过载，确保高层级精细度
 			var tolerance float64
 			switch {
 			case z <= 11:
-				tolerance = 40.0 // 低层级：大跨度简化（容差 40米）
+				tolerance = 40.0 // 视角很高时，大幅度抽稀线条节点
 			case z <= 14:
-				tolerance = 10.0 // 中层级：适度简化（容差 10米）
+				tolerance = 10.0 // 中等视角，适度抽稀
 			default:
-				tolerance = 0.0 // 高层级：不简化，保持原本精度
+				tolerance = 0.0 // 放大到细节时，保留原始最高精度
 			}
 
 			if tolerance > 0.0 {
 				mvtQuery = fmt.Sprintf(`
-                    WITH tilegeom AS (
-                        SELECT osm_id, name, highway, 
-                               ST_AsMVTGeom(ST_SimplifyPreserveTopology(way, %f), ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 4096, 64, true) AS geom
-                        FROM planet_osm_line
-                        %s 
-                          AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
-                    )
-                    SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`, tolerance, filterSQL)
+            WITH tilegeom AS (
+                SELECT osm_id, name, highway, 
+                       ST_AsMVTGeom(
+                           ST_SimplifyPreserveTopology(way, %f), 
+                           ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
+                           4096, 64, true
+                       ) AS geom
+                FROM planet_osm_line
+                %s 
+                  AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
+            )
+            SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`, tolerance, filterSQL)
 			} else {
 				mvtQuery = fmt.Sprintf(`
-                    WITH tilegeom AS (
-                        SELECT osm_id, name, highway, 
-                               ST_AsMVTGeom(way, ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 4096, 64, true) AS geom
-                        FROM planet_osm_line
-                        %s 
-                          AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
-                    )
-                    SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`, filterSQL)
+            WITH tilegeom AS (
+                SELECT osm_id, name, highway, 
+                       ST_AsMVTGeom(
+                           way, 
+                           ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
+                           4096, 64, true
+                       ) AS geom
+                FROM planet_osm_line
+                %s 
+                  AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
+            )
+            SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`, filterSQL)
 			}
 
 		default:
