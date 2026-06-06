@@ -445,11 +445,11 @@ func main() {
 	fmt.Println("🔒 HTTPS 分发网关就绪，拉起加密总线...")
 	// 🎯 修复路径挂载匹配：对齐阿里云个人测试证书在宿主机或容器中的典型解压命名规则
 	certPem := "/ssl/cert.pem"
-	keyPem := "/ssl/key.pem"
+	keyPem := "/ssl/cert.key"
 	if _, errC := os.Stat(certPem); errC != nil {
 		// 备用机制：防止挂载的是绝对密钥对后缀名称
 		certPem = "/ssl/cert.pem"
-		keyPem = "/ssl/key.key"
+		keyPem = "/ssl/cert.key"
 	}
 
 	err = http.ListenAndServeTLS(":443", certPem, keyPem, nil)
