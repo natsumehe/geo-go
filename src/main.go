@@ -397,21 +397,17 @@ func main() {
                 SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
 
 		case "roads":
-			// 🎯 核心修复：在此处无缝织入全自动空间投影自愈计算，解救被强贴 3857 标签的经纬度度数数据
 			mvtQuery = `
 				WITH tilegeom AS (
 					SELECT 
 						osm_id, 
 						name, 
 						highway, 
-						ST_AsMVTGeom(
-							ST_Transform(ST_SetSRID(way, 4326), 3857), 
-							ST_TileEnvelope($1, $2, $3), 
-							4096, 64, true
-						) AS geom
+						ST_AsMVTGeom(way, ST_TileEnvelope($1, $2, $3), 4096, 64, true) AS geom
 					FROM planet_osm_line
 					WHERE highway IS NOT NULL 
-					  AND ST_Transform(ST_SetSRID(way, 4326), 3857) && ST_TileEnvelope($1, $2, $3)
+					  -- ⚡ 极速原生空间边界求交
+					  AND way && ST_TileEnvelope($1, $2, $3)
 				)
 				SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`
 
