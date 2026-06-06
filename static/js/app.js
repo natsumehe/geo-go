@@ -27,7 +27,6 @@ const App = {
     },
 
     init() {
-        // 防止 CSS 隐形塌陷导致地图容器不显示
         const mapEl = document.getElementById('map');
         if (mapEl) {
             mapEl.style.width = '100vw';
@@ -48,14 +47,13 @@ const App = {
     initMap() {
         this.map = new maplibregl.Map({
             container: 'map',
-            // 🎯 精准对焦：调整至沈海高速目标路段上方
-            center: [121.18, 31.22],    
-            zoom: 12,                       
+            // 🎯 精准空降：直接定格在嘉定这段沈海高速的正上方
+            center: [121.174, 31.420],    
+            zoom: 13,                       
             minZoom: 9,                                         
             maxZoom: 18,                    
             maxBounds: this.shanghaiBounds, 
             pitch: 0,                      
-            
             style: {
                 "version": 8,
                 "sources": {},
@@ -66,6 +64,7 @@ const App = {
                         "paint": { "background-color": "#0d0f12" }
                     }
                 ]
+                // 💡 提示：如果以后一定要显示文字，需在此处配置 "glyphs": "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf"
             }
         });
 
@@ -75,7 +74,6 @@ const App = {
 
         this.map.on('load', () => {
             console.log("🟢 WebGL 空间画布就绪，开始加载 MVT 管道...");
-            document.getElementById('status').innerText = "纯净画布就绪，正在读取数据...";
             
             const mvtHost = window.location.protocol + '//' + window.location.host;
 
@@ -98,53 +96,31 @@ const App = {
             // 🎨 2. 图层渲染：沈海高速与地理围栏
             // ==========================================
             
-            // 2.1 核心路网线层（面向特规过滤后的沈海高速）
+            // 2.1 核心路网线层（已通过 ST_Transform 强洗对齐）
             this.map.addLayer({
                 'id': 'roads-layer-line', 
                 'type': 'line', 
                 'source': 'roads-mvt-source', 
-                'source-layer': 'roads', // 严格对齐后端 ST_AsMVT 中的图层标识
+                'source-layer': 'roads', // 严格对齐后端 ST_AsMVT 中的第一个参数图层标识
                 'layout': { 
                     'line-join': 'round', 
                     'line-cap': 'round'
                 },
                 'paint': {
-                    'line-color': '#00FFCC', // 荧光青色，确保暗色底图下绝对可见
+                    'line-color': '#00FFCC', // 荧光青色
                     'line-width': [
                         'interpolate', ['linear'], ['zoom'], 
-                        9, 3.0,
-                        14, 6.0,
-                        18, 10.0
+                        9, 4.0,
+                        14, 7.0,
+                        18, 12.0
                     ],
-                    'line-opacity': 1.0 // 全透明度显现
+                    'line-opacity': 1.0
                 }
             });
 
-            // 2.2 道路名称文本标注层
-            this.map.addLayer({
-                'id': 'roads-layer-label',
-                'type': 'symbol',
-                'source': 'roads-mvt-source',
-                'source-layer': 'roads',
-                'minzoom': 11, 
-                'layout': {
-                    'text-field': ['get', 'name'], 
-                    'text-size': [
-                        'interpolate', ['linear'], ['zoom'],
-                        11, 10,
-                        18, 14
-                    ],
-                    'symbol-placement': 'line', 
-                    'text-keep-upright': true
-                },
-                'paint': {
-                    'text-color': '#FFFFFF',
-                    'text-halo-color': '#0d0f12', 
-                    'text-halo-width': 2.0
-                }
-            });
+            // 🎯 已移除引发 glyphs 报错的 roads-layer-label 文本层，防止引擎死锁
 
-            // 2.3 地理围栏面层与边界线
+            // 2.2 地理围栏面层与边界线
             this.map.addLayer({
                 'id': 'fences-layer-fill', 'type': 'fill', 'source': 'fences-mvt-source', 'source-layer': 'fences',
                 'paint': { 'fill-color': '#007cbf', 'fill-opacity': 0.2 }
@@ -237,7 +213,6 @@ const App = {
         if (!coordinates || coordinates.length === 0 || !this.map) return;
         const lastPoint = coordinates[coordinates.length - 1];
 
-        // 🎯 防御校验：避免轨迹中混入 [0,0] 等非法坐标触发 maxBounds 死锁崩溃
         const lng = lastPoint[0];
         const lat = lastPoint[1];
         const b = this.shanghaiBounds;

@@ -2,89 +2,67 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Geo-Go 高精度车辆监控与地理围栏系统</title>
-    <link href="https://unpkg.com/maplibre-gl@4.1.2/dist/maplibre-gl.css" rel="stylesheet" />
-    <script src="https://unpkg.com/maplibre-gl@4.1.2/dist/maplibre-gl.js"></script>
+    <title>沈海高速路网与地理围栏实时大屏</title>
+    <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+    <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
     <style>
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: sans-serif; background: #0d0f12; }
-        #map { width: 100%; height: 100%; position: absolute; top: 0; bottom: 0; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #0d0f12; color: #fff; overflow: hidden; }
         
-        /* 科技感大屏幕监控面板 */
-        #panel {
-            position: absolute; top: 20px; left: 20px; z-index: 10;
-            background: rgba(13, 15, 18, 0.9); padding: 15px;
-            border-radius: 8px; box-shadow: 0 4px 25px rgba(0,0,0,0.8);
-            width: 300px; border: 1px solid #1f2937; color: #fff;
-            max-height: calc(100vh - 60px); display: flex; flex-direction: column;
-        }
-        h3 { margin-top: 0; color: #00d2ff; border-bottom: 2px solid #007cbf; padding-bottom: 5px; font-size: 16px; margin-bottom: 10px; }
-        #status { font-size: 12px; color: #9ca3af; margin-bottom: 10px; line-height: 1.4; }
-        #device-info { font-size: 11px; color: #00FF88; font-family: monospace; margin-bottom: 12px; font-weight: bold; }
+        /* 地图全屏容器 */
+        #map { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
         
-        /* 车辆选择列表容器 */
-        #device-swiper { 
-            max-height: 150px; overflow-y: auto; margin-bottom: 15px; 
-            border: 1px solid #1f2937; padding: 4px; background: rgba(0,0,0,0.4);
-            border-radius: 4px;
-        }
-        .swiper-slide { 
-            padding: 8px; background: #15181e; margin-top: 4px; border-radius: 4px; 
-            font-size: 12px; cursor: pointer; border-left: 3px solid #374151; transition: all 0.2s ease;
-            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; /* 防止超长 ID 撑破面板 */
-        }
-        .swiper-slide:first-child { margin-top: 0; }
-        .swiper-slide:hover { background: #1f2937; border-left-color: #9ca3af; }
-        .swiper-slide.active { background: #007cbf; color: white; font-weight: bold; border-left: 3px solid #00d2ff; }
-        .slide-tag { font-size: 10px; color: #9ca3af; margin-bottom: 2px; }
-        
-        /* 报警历史区域 */
-        #alarm-logs { 
-            max-height: 200px; overflow-y: auto; margin-top: 10px; 
-            border-top: 1px solid #1f2937; padding-top: 10px;
-        }
-        .log-item { 
-            font-size: 11px; margin-bottom: 6px; padding: 6px; 
-            background: rgba(255, 51, 51, 0.08); border-left: 3px solid #ff3333; 
-            border-radius: 4px; color: #ff9999; line-height: 1.5;
-        }
+        /* 顶部状态条 */
+        .top-bar { position: absolute; top: 15px; left: 15px; z-index: 10; background: rgba(13, 15, 18, 0.85); padding: 12px 20px; border-radius: 6px; border: 1px solid #1f242c; backdrop-filter: blur(5px); }
+        .top-bar h1 { font-size: 16px; margin-bottom: 4px; color: #00FFCC; letter-spacing: 1px; }
+        .top-bar p { font-size: 12px; color: #8a96a3; }
 
-        /* 🎯 优化：自定义大屏幕科技感滚动条，规避原生粗糙滚动条 */
-        #device-swiper::-webkit-scrollbar,
-        #alarm-logs::-webkit-scrollbar {
-            width: 4px;
-        }
-        #device-swiper::-webkit-scrollbar-track,
-        #alarm-logs::-webkit-scrollbar-track {
-            background: rgba(0, 0, 0, 0.1);
-        }
-        #device-swiper::-webkit-scrollbar-thumb,
-        #alarm-logs::-webkit-scrollbar-thumb {
-            background: #374151;
-            border-radius: 2px;
-        }
-        #device-swiper::-webkit-scrollbar-thumb:hover,
-        #alarm-logs::-webkit-scrollbar-thumb:hover {
-            background: #007cbf;
+        /* 左侧采集端卡片滑块 */
+        .sidebar { position: absolute; bottom: 30px; left: 15px; z-index: 10; width: 300px; max-height: 40vh; background: rgba(13, 15, 18, 0.85); border-radius: 6px; border: 1px solid #1f242c; backdrop-filter: blur(5px); display: flex; flex-direction: column; }
+        .sidebar-title { padding: 12px; font-size: 12px; font-weight: bold; color: #8a96a3; border-bottom: 1px solid #1f242c; letter-spacing: 0.5px; }
+        #device-swiper { overflow-y: auto; flex: 1; padding: 8px; }
+        .swiper-slide { background: #161a22; border: 1px solid #242b37; padding: 10px; margin-bottom: 8px; border-radius: 4px; cursor: pointer; transition: all 0.2s ease; }
+        .swiper-slide:hover { border-color: #00FFCC; }
+        .swiper-slide.active { background: #1c2330; border-color: #00FFCC; box-shadow: inset 0 0 8px rgba(0,255,204,0.2); }
+        .slide-tag { font-size: 10px; color: #00FFCC; margin-bottom: 2px; text-transform: uppercase; }
+        .slide-id { font-size: 13px; font-family: monospace; font-weight: bold; }
+
+        /* 右侧实时违法闯区存证日志 */
+        .alarm-panel { position: absolute; top: 15px; right: 15px; z-index: 10; width: 320px; max-height: 85vh; background: rgba(26, 10, 10, 0.85); border-radius: 6px; border: 1px solid #4a1515; backdrop-filter: blur(5px); display: flex; flex-direction: column; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+        .alarm-title { padding: 12px; font-size: 13px; font-weight: bold; color: #ff5555; border-bottom: 1px solid #4a1515; background: rgba(255,85,85,0.05); }
+        #alarm-logs { overflow-y: auto; flex: 1; padding: 10px; }
+        .log-item { background: rgba(20, 10, 10, 0.6); border-left: 3px solid #ff3333; padding: 10px; margin-bottom: 8px; border-radius: 0 4px 4px 0; font-size: 12px; line-height: 1.5; animation: fadeIn 0.3s ease; }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
     </style>
 </head>
 <body>
 
-<div id="panel">
-    <h3>Geo-Go 指挥中心</h3>
-    <div id="device-info">DEVICE ID: FETCHING...</div>
-    <div id="status">系统初始化中...</div>
-    
-    <div style="font-weight: bold; font-size: 12px; color: #00d2ff; margin-bottom: 6px;">🚗 活跃车辆列表 (点击锁定追踪)</div>
-    <div id="device-swiper"></div>
+    <div id="map"></div>
 
-    <div style="font-weight: bold; font-size: 12px; color: #ff3333; margin-bottom: 2px;">🚨 实时区域报警存证</div>
-    <div id="alarm-logs"></div>
-</div>
+    <div class="top-bar">
+        <h1>沈海高速路网（嘉定段）指挥中心</h1>
+        <p id="status">正在构建 WebGL 空间画布...</p>
+        <p id="device-info" style="font-family: monospace; margin-top: 4px; color: #5c6975; font-size: 10px;"></p>
+    </div>
 
-<div id="map"></div>
+    <div class="sidebar">
+        <div class="sidebar-title">📡 动态轨迹追踪列表 (3000ms 轮询)</div>
+        <div id="device-swiper">
+            <div style="font-size:12px; color:#666; padding:8px;">正在等待同步源...</div>
+        </div>
+    </div>
 
-<script src="/js/app.js"></script>
+    <div class="alarm-panel">
+        <div class="alarm-title">🚨 实时电子围栏违规闯区存证 (WS 异步流)</div>
+        <div id="alarm-logs">
+            <div style="font-size:12px; color:#666; padding:8px; text-align:center;">暂无违规穿行存证事件</div>
+        </div>
+    </div>
+
+    <script src="/app.js"></script>
 </body>
 </html>

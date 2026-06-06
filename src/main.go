@@ -43,7 +43,7 @@ func (kf *KalmanFilter) SmartUpdate(measuredValue float64, maxDelta float64) flo
 type DeviceFilters struct {
 	LatKF    *KalmanFilter
 	LngKF    *KalmanFilter
-	LastSeen time.Time // 🎯 新增：用于后续内存清理依据
+	LastSeen time.Time // 🎯 用于后续内存清理依据
 }
 
 type LastPos struct {
@@ -332,6 +332,8 @@ func FencesHandle(w http.ResponseWriter, r *http.Request) {
 func main() {
 	connStr := os.Getenv("DB_URL")
 	if connStr == "" {
+		// 💡 提示：如果推到阿里云生产环境，请记得在此处或环境变量中追加云数据库的 SSL 认证后缀
+		// 示例: &sslmode=verify-ca&sslrootcert=/etc/ssl/certs/alicloud-rds-ca.pem
 		connStr = "postgres://docker:floder123@172.17.0.1:5432/gis_db?sslmode=disable"
 	}
 	redisAddr := os.Getenv("REDIS_URL")
@@ -383,9 +385,6 @@ func main() {
 	// ==========================================
 	// ⚡ PostGIS 核心：多图层动态瓦片裁剪服务 (MVT)
 	// ==========================================
-	// ==========================================
-	// ⚡ PostGIS 核心：多图层动态瓦片裁剪服务 (MVT)
-	// ==========================================
 	http.HandleFunc("/tiles/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
@@ -396,7 +395,6 @@ func main() {
 			return
 		}
 
-		// 健壮清洗路径：兼容前端可能带有的 .mvt 后缀或 URL 参数
 		path := strings.TrimPrefix(r.URL.Path, "/tiles/")
 		path = strings.ReplaceAll(path, ".mvt", "")
 		parts := strings.Split(path, "/")
@@ -420,7 +418,6 @@ func main() {
 		switch layerName {
 
 		case "fences":
-			// 🎯 地理围栏面切片：动态适配底层可能是 4326 或 3857 的情况
 			mvtQuery = `
                 WITH tilegeom AS (
                     SELECT id, name, 
@@ -438,23 +435,24 @@ func main() {
 			// 🎯 锁死你的目标沈海高速线段 osm_id
 			filterSQL := "WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)"
 
-			// 🎯 完美自适应对齐 SQL（在 Go 里动态适配前端传入的 $1, $2, $3）
+			// 🎯 阿里云生产级纠偏重构核心：
+			// 移除可能引起优化器边界混乱的动态 ST_SRID(way) 包装。
+			// 针对 osm2pgsql 导入的标准 Web 墨卡托路网，直接将瓦片信封固定在 3857 网格进行边界相交判定，100% 压榨物理空间索引。
 			mvtQuery = fmt.Sprintf(`
-        WITH tilegeom AS (
-            SELECT osm_id, 
-                   '沈海高速' AS name, 
-                   'motorway' AS highway, 
-                   ST_AsMVTGeom(
-                       ST_Transform(way, 3857), -- 1. 显式纠偏，100% 确保像素转换正确
-                       ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
-                       4096, 64, true -- 开启物理裁剪，保证瓦片边缘平滑
-                   ) AS geom
-            FROM planet_osm_line
-            %s 
-              -- 2. 空间索引安全碰撞：将瓦片信封转换至与 way 的原始 SRID 一致
-              AND way && ST_Transform(ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), ST_SRID(way))
-        )
-        SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom WHERE geom IS NOT NULL;`, filterSQL)
+                WITH tilegeom AS (
+                    SELECT osm_id, 
+                           '沈海高速' AS name, 
+                           'motorway' AS highway, 
+                           ST_AsMVTGeom(
+                               ST_Transform(way, 3857), 
+                               ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
+                               4096, 64, true 
+                           ) AS geom
+                    FROM planet_osm_line
+                    %s 
+                      AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
+                )
+                SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom WHERE geom IS NOT NULL;`, filterSQL)
 
 		default:
 			http.Error(w, "Layer not found", http.StatusNotFound)
@@ -464,7 +462,6 @@ func main() {
 		var tileData []byte
 		err := db.QueryRow(mvtQuery, z, x, y).Scan(&tileData)
 
-		// 🎯 核心防错：即使没有数据，也不要直接断掉连接，返回 204 让前端优雅跳过该格子
 		if err != nil || len(tileData) == 0 {
 			w.Header().Del("Content-Type")
 			w.WriteHeader(http.StatusNoContent)
@@ -472,7 +469,7 @@ func main() {
 		}
 
 		w.Header().Set("Content-Type", "application/vnd.mapbox-vector-tile")
-		w.Header().Set("Cache-Control", "public, max-age=600") // 赋予 10 分钟本地瓦片缓存，减小频繁拖动对 DB 造成的瞬时压力
+		w.Header().Set("Cache-Control", "public, max-age=600")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(tileData)
 	})
