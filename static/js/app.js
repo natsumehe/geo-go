@@ -1,5 +1,5 @@
 // ==========================================
-// 🛰️ 自适应通信网关协议与上海边界
+// 🛰️ 自适应通信网关协议
 // ==========================================
 const BASE_URL  = `${window.location.protocol}//${window.location.host}`;
 const WS_URL    = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
@@ -14,10 +14,10 @@ const SHANGHAI_BOUNDS = [
 // ==========================================
 const map = new maplibregl.Map({
     container: 'map',
-    center: [121.145, 31.445], // 🎯 精准对齐 6853/3342 数据老巢
+    center: [121.145, 31.445], // 🎯 精准对齐数据老巢
     zoom: 13,
     maxBounds: SHANGHAI_BOUNDS,
-    // 💡 升级一：切换为官方高质量赛博暗黑主题样式
+    // 💡 官方高质量赛博暗黑主题样式
     style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
 });
 
@@ -49,7 +49,6 @@ map.on('load', () => {
         'source-layer': 'roads', 
         'layout': { 'line-join': 'round', 'line-cap': 'round' },
         'paint': {
-            // 依据 highway 标签动态分流色彩
             'line-color': [
                 'match', ['get', 'highway'],
                 'motorway', '#00FFCC', // 高速：荧光青
@@ -72,35 +71,35 @@ map.on('load', () => {
         }
     });
 
-    // 2. [中层] 💡 升级二：新增道路名称文字标注图层
+    // 2. [中层] 新增道路名称文字标注图层
     map.addLayer({
         'id': 'roads-layer-text',
         'type': 'symbol',
         'source': 'roads-mvt-source',
         'source-layer': 'roads',
         'layout': {
-            'text-field': '{name}', // 动态提取 PostGIS 吐出的 name 字段
+            'text-field': '{name}', 
             'text-font': ['Noto Sans Regular', 'Open Sans Regular'],
             'text-size': 11,
-            'symbol-placement': 'line', // 关键：文字顺着道路线型方向延伸排布
+            'symbol-placement': 'line', 
             'text-keep-upright': true,
             'text-padding': 20
         },
         'paint': {
-            'text-color': '#E5E5EA', // 浅白文字，契合暗黑风格
-            'text-halo-color': '#1C1C1E', // 黑色深邃文字光晕，防止在亮色路段看不清
+            'text-color': '#E5E5EA', 
+            'text-halo-color': '#1C1C1E', 
             'text-halo-width': 2
         }
     });
 
-    // 3. [顶层] 💡 升级三：围栏图层（最后挂载，确保压在所有道路的最上方）
+    // 3. [顶层] 围栏图层（最后挂载，确保压在所有道路的最上方）
     map.addLayer({
         'id': 'fences-layer-fill', 
         'type': 'fill', 
         'source': 'fences-mvt-source', 
         'source-layer': 'fences', 
         'paint': { 
-            'fill-color': '#FF3B30', // 半透明警示深红
+            'fill-color': '#FF3B30', 
             'fill-opacity': 0.22 
         }
     });
@@ -113,7 +112,7 @@ map.on('load', () => {
         'paint': { 
             'line-color': '#FF453A', 
             'line-width': 2,
-            'line-dasharray': [2, 2] // 虚线勾边，增强大屏科技感
+            'line-dasharray': [2, 2] 
         }
     });
 
@@ -124,7 +123,7 @@ map.on('load', () => {
 });
 
 // ==========================================
-// 📶 业务核心模块（保持高内聚，未受样式调整干扰）
+// 📶 业务核心模块
 // ==========================================
 function initDeviceDropdown() {
     const fetchList = () => {
@@ -167,7 +166,6 @@ function switchDeviceHistory(deviceId) {
             map.addLayer({
                 'id': 'track-layer', 'type': 'line', 'source': 'device-track',
                 'layout': { 'line-join': 'round', 'line-cap': 'round' },
-                // 霓虹黄轨迹线，在暗黑底图下极为醒目
                 'paint': { 'line-color': '#FFD60A', 'line-width': 4.5 } 
             });
             map.easeTo({ center: validCoords[validCoords.length - 1], zoom: 14, duration: 500 });
@@ -215,21 +213,18 @@ let routeMarkers = [];  // 存储图面大头针
 // 监听地图的点击事件
 map.on('click', (e) => {
     if (routingPoints.length >= 2) {
-        // 如果已经有了一条线，再次点击时清空旧导航
         clearRouting();
     }
 
     const coords = [e.lngLat.lng, e.lngLat.lat];
     routingPoints.push(coords);
 
-    // 在点击处插一个霓虹绿/红的科幻大头针
     const markerColor = routingPoints.length === 1 ? '#00FFCC' : '#FF3B30';
     const marker = new maplibregl.Marker({ color: markerColor })
         .setLngLat(coords)
         .addTo(map);
     routeMarkers.push(marker);
 
-    // 当点满两个点（起点和终点），立刻触发后端 Valhalla 算路
     if (routingPoints.length === 2) {
         calculateRoute(routingPoints[0], routingPoints[1]);
     }
@@ -237,7 +232,6 @@ map.on('click', (e) => {
 
 // 核心函数：向前发请求请求 Valhalla 引擎
 function calculateRoute(start, end) {
-    // 🎯 构造 Valhalla 要求的标准 JSON 请求体 (汽车驾驶模式: auto)
     const requestJson = {
         locations: [
             { lon: start[0], lat: start[1], type: "break" },
@@ -247,8 +241,7 @@ function calculateRoute(start, end) {
         directions_options: { units: "km", language: "zh-CN" }
     };
 
-    // 🎯 终极休止：干掉 http:// 和 8002 端口，强制利用同源相对路径走 Go 安全隧道
-    // 并且针对参数嵌套进行高级 URL 编码保护，严防特殊符号阻断
+    // 🎯 走同源相对路径经过 Go 安全隧道转发
     const url = `/route?json=${encodeURIComponent(JSON.stringify(requestJson))}`;
 
     fetch(url)
@@ -260,10 +253,10 @@ function calculateRoute(start, end) {
             if (!data.trip || !data.trip.legs || data.trip.legs.length === 0) {
                 throw new Error("未解算出合法的拓扑路径");
             }
-            // Valhalla 返回的是一条经过压缩的 Polyline，我们需要将其解析为线段坐标串
+            // 🎯 默认对齐 Valhalla 官方镜像的 6 位压缩精度
             const coordinates = decodeValhallaShape(data.trip.legs[0].shape);
             
-            // 将导航线绘制到暗黑底图上
+            // 渲染至 WebGL 画布
             renderRouteLine(coordinates);
             
             console.log(`🟢 算路成功：全程 ${data.trip.summary.length} 公里，预计耗时 ${data.trip.summary.time} 秒`);
@@ -271,7 +264,7 @@ function calculateRoute(start, end) {
         .catch(err => console.error("❌ 导航总线报错:", err));
 }
 
-// 解压 Valhalla 形状拓扑字符串的核心算法 (6位精度 Polyline 解码)
+// 解压 Valhalla 形状拓扑字符串的核心算法 (标准 6 位精度 Polyline 解码)
 function decodeValhallaShape(str) {
     let index = 0, len = str.length;
     let lat = 0, lng = 0;
@@ -298,18 +291,21 @@ function renderRouteLine(coordinates) {
         'data': { 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': coordinates } }
     });
 
+    // 🎯 鲁棒性加固：动态探测围栏填充层是否存在，严防异步加载时点击引发图层索引白屏死锁
+    const beforeLayer = map.getLayer('fences-layer-fill') ? 'fences-layer-fill' : undefined;
+
     map.addLayer({
         'id': 'navigation-line',
         'type': 'line',
         'source': 'navigation-source',
         'layout': { 'line-join': 'round', 'line-cap': 'round' },
-        // 🎯 赛博霓虹粉：在暗黑系统下呈现极强的视觉张力
+        // 🎯 赛博霓虹粉
         'paint': {
             'line-color': '#FF2D55', 
             'line-width': 6,
             'line-opacity': 0.9
         }
-    }, 'fences-layer-fill'); // 确保线层依然在电子围栏下方，维持层序
+    }, beforeLayer); 
 }
 
 function clearRouting() {
