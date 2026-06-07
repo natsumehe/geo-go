@@ -145,33 +145,33 @@ function initDeviceDropdown() {
 }
 
 function switchDeviceHistory(deviceId) {
-	if (!deviceId) return;
-	fetch(`${BASE_URL}/history?id=${encodeURIComponent(deviceId)}`)
-		.then(res => res.json())
-		.then(geoJSON => {
-			if (!geoJSON.coordinates || geoJSON.coordinates.length === 0) return;
-			const validCoords = geoJSON.coordinates.filter(pt => {
-				const lng = pt[0], lat = pt[1];
-				const b = SHANGHAI_BOUNDS;
-				return (lng >= b[0][0] && lng <= b[1][0] && lat >= b[0][1] && lat <= b[1][1]);
-			});
-			if (validCoords.length === 0) return;
+    if (!deviceId) return;
+    fetch(`${BASE_URL}/history?id=${encodeURIComponent(deviceId)}`)
+        .then(res => res.json())
+        .then(geoJSON => {
+            if (!geoJSON.coordinates || geoJSON.coordinates.length === 0) return;
+            const validCoords = geoJSON.coordinates.filter(pt => {
+                const lng = pt[0], lat = pt[1];
+                const b = SHANGHAI_BOUNDS;
+                return (lng >= b[0][0] && lng <= b[1][0] && lat >= b[0][1] && lat <= b[1][1]);
+            });
+            if (validCoords.length === 0) return;
 
-			if (map.getLayer('track-layer')) map.removeLayer('track-layer');
-			if (map.getSource('device-track')) map.removeSource('device-track');
+            if (map.getLayer('track-layer')) map.removeLayer('track-layer');
+            if (map.getSource('device-track')) map.removeSource('device-track');
 
-			map.addSource('device-track', {
-				'type': 'geojson',
-				'data': { 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': validCoords.slice(-100) } }
-			}); 
-			map.addLayer({
-				'id': 'track-layer', 'type': 'line', 'source': 'device-track',
-				'layout': { 'line-join': 'round', 'line-cap': 'round' },
-				// 霓虹黄轨迹线，在暗黑底图下极为醒目
-				'paint': { 'line-color': '#FFD60A', 'line-width': 4.5 } 
-			});
-			map.easeTo({ center: validCoords[validCoords.length - 1], zoom: 14, duration: 500 });
-		}).catch(err => console.error('❌ 历史轨迹点查错误:', err));
+            map.addSource('device-track', {
+                'type': 'geojson',
+                'data': { 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': validCoords.slice(-100) } }
+            }); 
+            map.addLayer({
+                'id': 'track-layer', 'type': 'line', 'source': 'device-track',
+                'layout': { 'line-join': 'round', 'line-cap': 'round' },
+                // 霓虹黄轨迹线，在暗黑底图下极为醒目
+                'paint': { 'line-color': '#FFD60A', 'line-width': 4.5 } 
+            });
+            map.easeTo({ center: validCoords[validCoords.length - 1], zoom: 14, duration: 500 });
+        }).catch(err => console.error('❌ 历史轨迹点查错误:', err));
 }
 
 function loadHistoricalAlarms() {
@@ -184,10 +184,10 @@ function connectWebSocket() {
     const ws = new WebSocket(WS_URL);
     ws.onmessage = (event) => {
         try {
-			const data = JSON.parse(event.data);
-			if (data.type === 'alarm') {
-				appendAlarmDOM(data.driver, data.fence, new Date().toLocaleTimeString('zh-CN', { hour12: false }));
-			}
+            const data = JSON.parse(event.data);
+            if (data.type === 'alarm') {
+                appendAlarmDOM(data.driver, data.fence, new Date().toLocaleTimeString('zh-CN', { hour12: false }));
+            }
         } catch (e) {}
     };
     ws.onclose = () => { setTimeout(connectWebSocket, 5000); };
@@ -212,7 +212,7 @@ function appendAlarmDOM(driver, fence, time) {
 let routingPoints = []; // 存储坐标栈 [起点, 终点]
 let routeMarkers = [];  // 存储图面大头针
 
-// 监听地图的点击事件（按住 Shift + 点击 图面来选定起终点）
+// 监听地图的点击事件
 map.on('click', (e) => {
     if (routingPoints.length >= 2) {
         // 如果已经有了一条线，再次点击时清空旧导航
@@ -247,14 +247,19 @@ function calculateRoute(start, end) {
         directions_options: { units: "km", language: "zh-CN" }
     };
 
-    // 💡 针对 8002 端口的 Valhalla 路由服务发起高能物理点查
-    // 实际生产中建议用 Nginx 反向代理将 8002 映射到 /route 路径下以规避跨域
-    fetch(`http://${window.location.hostname}:8002/route?json=${JSON.stringify(requestJson)}`)
+    // 🎯 终极休止：干掉 http:// 和 8002 端口，强制利用同源相对路径走 Go 安全隧道
+    // 并且针对参数嵌套进行高级 URL 编码保护，严防特殊符号阻断
+    const url = `/route?json=${encodeURIComponent(JSON.stringify(requestJson))}`;
+
+    fetch(url)
         .then(res => {
             if (!res.ok) throw new Error("导航路径生成失败");
             return res.json();
         })
         .then(data => {
+            if (!data.trip || !data.trip.legs || data.trip.legs.length === 0) {
+                throw new Error("未解算出合法的拓扑路径");
+            }
             // Valhalla 返回的是一条经过压缩的 Polyline，我们需要将其解析为线段坐标串
             const coordinates = decodeValhallaShape(data.trip.legs[0].shape);
             
