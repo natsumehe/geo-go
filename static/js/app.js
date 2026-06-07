@@ -36,13 +36,6 @@ map.on('load', () => {
         'tiles': [ window.location.origin + '/tiles/roads/{z}/{x}/{y}.mvt' ]
     });
 
-    map.addSource('roads-mvt-source', {
-        'type': 'vector',
-        'tiles': [ MVT_URL + '/roads/{z}/{x}/{y}.mvt' ],
-        'minzoom': 9,
-        'maxzoom': 18
-    });
-
     // 2. 挂载地理围栏渲染图层 (淡淡的警示红)
     map.addLayer({
         'id': 'fences-layer-fill', 
