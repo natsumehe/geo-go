@@ -435,20 +435,29 @@ func main() {
 			dbErr = db.QueryRow(mvtQuery, z, x, y).Scan(&localTileData)
 
 		case "roads":
-			// 🎯 保持 Go 代码的动态弹性：不需要改成硬编码数字！
+			// 🎯 核心调试点：把前端传过来的原始字符串和解析后的数字直接打印出来
+			log.Printf("[🔎 Go 接收层探测] 原始 URL 路径片段: layer=%s, Z_raw=%s, X_raw=%s, Y_raw=%s", layerName, parts[1], parts[2], parts[3])
+
+			yStr := strings.Split(parts[3], "?")[0]
+			yStr = strings.ReplaceAll(yStr, ".mvt", "")
+			y, errY := strconv.Atoi(yStr)
+
+			log.Printf("[🔎 Go 解析层探测] 转换后的数字: Z_int=%d, X_int=%d, Y_int=%d | Y转换解析错误=%v", z, x, y, errY)
+
 			mvtQuery := `
-    WITH tilegeom AS (
-        SELECT osm_id, name,
-               ST_AsMVTGeom(way, ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857), 4096, 64, true) AS geom
-        FROM planet_osm_line
-        WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)
-          AND way && ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857)
-    )
-    SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom WHERE geom IS NOT NULL;`
+                WITH tilegeom AS (
+                    SELECT osm_id, name,
+                           ST_AsMVTGeom(way, ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 4096, 64, true) AS geom
+                    FROM planet_osm_line
+                    WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)
+                      AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
+                )
+                SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom WHERE geom IS NOT NULL;`
 
-			// 🎯 Go 会在这一步将动态接收到的 z, x, y 补位到 $1, $2, $3 中去
 			dbErr = db.QueryRow(mvtQuery, z, x, y).Scan(&localTileData)
-
+			if dbErr != nil {
+				log.Printf("[🔎 Go 数据库层报错]: %v", dbErr)
+			}
 		default:
 			http.Error(w, "Layer not found", http.StatusNotFound)
 			return
