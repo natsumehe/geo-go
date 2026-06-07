@@ -405,11 +405,14 @@ func main() {
 			return
 		}
 
-		var mvtQuery string
+		var tileData []byte
+		var queryErr error
+
+		// 🎯 优化解法：将各分支的数据库处理逻辑闭环封装在各自的 case 内
 		switch layerName {
 
 		case "fences":
-			mvtQuery = `
+			mvtQuery := `
                 WITH tilegeom AS (
                     SELECT id, name, 
                            ST_AsMVTGeom(
@@ -421,32 +424,33 @@ func main() {
                     WHERE area && ST_Transform(ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), ST_SRID(area))
                 )
                 SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
+			queryErr = db.QueryRow(mvtQuery, z, x, y).Scan(&tileData)
 
 		case "roads":
-			// 🎯 彻底去掉 && 拦截，不管前端看哪里、怎么缩放，只要请求 roads 瓦片，一律全量把这 6 条线切片给前端
-			mvtQuery = `
+			mvtQuery := `
                 WITH tilegeom AS (
-    SELECT 
-        osm_id, 
-        name,
-        ST_AsMVTGeom(
-            ST_Transform(way, 3857), -- 🎯 强行将 way 转换到 3857
-            ST_SetSRID(ST_TileEnvelope(13, 6852, 3321), 3857), 
-            4096, 64, false -- 🎯 设为 false，强行不裁剪，暴露真实映射值
-        ) AS geom
-    FROM planet_osm_line
-    WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)
-)
-SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`
+                    SELECT 
+                        osm_id, 
+                        name,
+                        ST_AsMVTGeom(
+                            ST_Transform(way, 3857), 
+                            ST_SetSRID(ST_TileEnvelope(13, 6852, 3321), 3857), 
+                            4096, 64, false 
+                        ) AS geom
+                    FROM planet_osm_line
+                    WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)
+                )
+                SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom WHERE geom IS NOT NULL;`
+			// 🎯 修复点：硬编码测试，不需要往后端喂动态变量参数
+			queryErr = db.QueryRow(mvtQuery).Scan(&tileData)
+
 		default:
 			http.Error(w, "Layer not found", http.StatusNotFound)
 			return
 		}
 
-		var tileData []byte
-		err := db.QueryRow(mvtQuery, z, x, y).Scan(&tileData)
-
-		if err != nil || len(tileData) == 0 {
+		// 🎯 统一对执行结果做拦截断流判定
+		if queryErr != nil || len(tileData) == 0 {
 			w.Header().Del("Content-Type")
 			w.WriteHeader(http.StatusNoContent)
 			return

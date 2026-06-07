@@ -18,9 +18,7 @@ const SHANGHAI_BOUNDS = [
 const map = new maplibregl.Map({
     container: 'map',
     center: [121.174, 31.420], // 精准空降：沈海高速嘉定段正上方
-    zoom: 12,
-    minZoom: 9,
-    maxZoom: 18,
+    zoom: 13,
     maxBounds: SHANGHAI_BOUNDS,
     
     style: 'https://demotiles.maplibre.org/style.json',
@@ -33,9 +31,9 @@ map.on('load', () => {
     console.log("🟢 WebGL 空间画布就绪，开始加载 MVT 管道...");
 
     // 1. 注册数据源：强行绑定你的 Go 后端多图层瓦片接口
-    map.addSource('fences-mvt-source', {
+    map.addSource('roads-mvt-source', {
         'type': 'vector',
-        'tiles': [ MVT_URL + '/fences/{z}/{x}/{y}.mvt' ]
+        'tiles': [ window.location.origin + '/tiles/roads/{z}/{x}/{y}.mvt' ]
     });
 
     map.addSource('roads-mvt-source', {
@@ -66,20 +64,11 @@ map.on('load', () => {
         'id': 'roads-layer-line', 
         'type': 'line', 
         'source': 'roads-mvt-source', 
-        'source-layer': 'roads', 
-        'layout': { 
-            'line-join': 'round', 
-            'line-cap': 'round',
-            'visibility': 'visible' 
-        },
+        'source-layer': 'roads', // 🎯 必须和 SQL 里 ST_AsMVT(..., 'roads') 一致
+        'layout': { 'line-join': 'round', 'line-cap': 'round' },
         'paint': {
-            'line-color': '#00FFCC', // 极客荧光青
-            'line-width': [
-                'interpolate', ['linear'], ['zoom'], 
-                9, 4.0,
-                14, 7.0,
-                18, 12.0
-            ],
+            'line-color': '#00FFCC', // 荧光青
+            'line-width': 8,
             'line-opacity': 1.0
         }
     });
