@@ -430,30 +430,27 @@ func main() {
 			dbErr = db.QueryRow(mvtQuery, z, x, y).Scan(&localTileData)
 
 		case "roads":
-			// 🎯 动态金字塔抽稀 SQL：根据不同 Zoom 层级过滤道路等级与精简几何节点
 			var highwayFilter string
 			var tolerance float64
 
 			if z < 11 {
-				// 缩小状态：只看高速和主干道，高强度抽稀（容差 100 米），防止大范围吞噬内存
 				highwayFilter = "highway IN ('motorway', 'trunk')"
 				tolerance = 100.0
 			} else if z >= 11 && z < 14 {
-				// 中等状态：加入省道和次干道，中度抽稀（容差 20 米）
 				highwayFilter = "highway IN ('motorway', 'trunk', 'primary', 'secondary')"
 				tolerance = 20.0
 			} else {
-				// 放大状态 (z >= 14)：全量加载所有道路（包括小路），不做抽稀（容差 0 米）保证精度
 				highwayFilter = "highway IS NOT NULL"
 				tolerance = 0.0
 			}
 
 			mvtQuery := fmt.Sprintf(`
                 WITH tilegeom AS (
+                    -- 💡 关键改动：SELECT 中必须保留 name 和 highway 字段
+                    -- 这样 ST_AsMVT 才会把属性打包进矢量瓦片，前端才能通过 ['get', 'highway'] 上色和通过 {name} 显示文字
                     SELECT osm_id, name, highway,
                            ST_AsMVTGeom(
-                               -- 💡 使用 ST_SimplifyPreserveTopology 动态简化几何，大幅削减并发传输的字节量
-                               ST_SimplifyPreserveTopology(way_3857, %f), 
+                               ST_SimplifyPreserveTopology(way_3837, %f), 
                                ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857), 
                                4096, 64, true
                            ) AS geom
