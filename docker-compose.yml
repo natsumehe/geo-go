@@ -21,6 +21,8 @@ services:
       - /ssl:/ssl:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - geo-net
 
   redis:
     image: redis:7-alpine
@@ -40,3 +42,7 @@ services:
       # 🎯 将解构好的上海路网拓扑碎文件目录挂载进容器
       - /root/valhalla-server/custom_tiles:/custom_files/valhalla_tiles
     # 💡 避坑指南：不强行覆写 entrypoint，让官方镜像用自带的轻量脚本高内聚启动，最稳妥
+
+networks:
+  geo-net:
+    driver: bridge

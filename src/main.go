@@ -383,23 +383,20 @@ func main() {
 	valhallaProxy := httputil.NewSingleHostReverseProxy(valhallaURL)
 
 	http.HandleFunc("/route", func(w http.ResponseWriter, r *http.Request) {
-		// 1. 注入全量安全跨域头
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
-
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 
-		// 2. 修正 Request 头部，防范 Valhalla 内部路由识别落空
+		// 🎯 核心防502重写：必须彻底将 Host 改为 Valhalla 容器的目标 Host
 		r.URL.Host = valhallaURL.Host
 		r.URL.Scheme = valhallaURL.Scheme
+		r.Host = valhallaURL.Host // 👈 这一行至关重要，欺骗 Valhalla 是本地调用
 		r.Header.Set("X-Forwarded-Host", r.Header.Get("Host"))
-		r.Host = valhallaURL.Host
 
-		// 3. 物理穿透：直接交由内部网络管道递交给 Valhalla 容器
 		valhallaProxy.ServeHTTP(w, r)
 	})
 
