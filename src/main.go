@@ -382,6 +382,10 @@ func main() {
 	valhallaURL, _ := url.Parse("http://valhalla-service:8002")
 	valhallaProxy := httputil.NewSingleHostReverseProxy(valhallaURL)
 
+	// 🧭 隧道：将前端加密的 /route 请求透明穿透给 192.168.10.30 容器
+	valhallaURL, _ := url.Parse("http://192.168.10.30:8002")
+	valhallaProxy := httputil.NewSingleHostReverseProxy(valhallaURL)
+
 	http.HandleFunc("/route", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -391,10 +395,10 @@ func main() {
 			return
 		}
 
-		// 🎯 核心防502重写：必须彻底将 Host 改为 Valhalla 容器的目标 Host
+		// 🎯 核心重写：彻底抹除外网 host 痕迹，欺骗 Valhalla 它是被同源调用的
 		r.URL.Host = valhallaURL.Host
 		r.URL.Scheme = valhallaURL.Scheme
-		r.Host = valhallaURL.Host // 👈 这一行至关重要，欺骗 Valhalla 是本地调用
+		r.Host = valhallaURL.Host
 		r.Header.Set("X-Forwarded-Host", r.Header.Get("Host"))
 
 		valhallaProxy.ServeHTTP(w, r)

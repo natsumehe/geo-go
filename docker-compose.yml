@@ -1,48 +1,65 @@
 version: '3.8'
 
 services:
+  # -------------------------------------------------------------
+  # 🚀 Go 后端网关总线服务
+  # -------------------------------------------------------------
   app:
     build: .
     container_name: geo-go-app-1
+    restart: always
     ports:
       - "443:443"
       - "8080:8080"
+    networks:
+      geo-static-net:
+        ipv4_address: 192.168.10.10  # 🎯 固定 Go 容器内网 IP
     environment:
-      # 🎯 穿透宿主机访问外部 PostGIS 数据库
       - DB_URL=postgres://docker:floder123@host.docker.internal:5432/gis_db?sslmode=disable
-      # 🎯 修正：显式声明 Redis 连接串（请确保 Go 代码中解析该变量时支持 host:port 格式）
-      - REDIS_URL=geo-go-redis-1:6379
-    restart: always
+      - REDIS_URL=192.168.10.20:6379  # 🎯 使用静态 IP 连接隔壁 Redis
     depends_on:
       - redis
       - valhalla-service
     volumes:
-      # 【物理挂载】宿主机 SSL 证书绝对路径只读穿透（完美解决 open /ssl/cert.pem 报错）
-      - /ssl:/ssl:ro
+      - /ssl:/ssl:ro                 # 🔓 物理挂载宿主机真证书，防止 open /ssl/cert.pem 猝死
+      - ./static:/app/static         # 挂载前端静态大屏资源
     extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - geo-net
+      - "host.docker.internal:host-gateway" # 允许 Linux 容器直接穿透访问宿主机上的 PostGIS
 
+  # -------------------------------------------------------------
+  # 💾 Redis 高速缓存服务
+  # -------------------------------------------------------------
   redis:
     image: redis:7-alpine
     container_name: geo-go-redis-1
     restart: always
-    # 💡 提示：无需暴露 6379 给外网，Compose 内部局域网默认互通，更安全
+    networks:
+      geo-static-net:
+        ipv4_address: 192.168.10.20  # 🎯 固定 Redis 容器内网 IP
 
+  # -------------------------------------------------------------
+  # 🧭 Valhalla 拓扑导航引擎
+  # -------------------------------------------------------------
   valhalla-service:
     image: ghcr.io/valhalla/valhalla:latest
     container_name: valhalla-service
     restart: always
     ports:
       - "8002:8002"
+    networks:
+      geo-static-net:
+        ipv4_address: 192.168.10.30  # 🎯 关键：固定 Valhalla 容器内网 IP
     volumes:
-      # 🎯 将宿主机的配置文件挂载到容器默认读取位置
+      # 迎合官方镜像默认的加载路径，它启动时会自动去 /custom_files 里找配置和路网
       - /root/valhalla-server/valhalla.json:/custom_files/valhalla.json:ro
-      # 🎯 将解构好的上海路网拓扑碎文件目录挂载进容器
       - /root/valhalla-server/custom_tiles:/custom_files/valhalla_tiles
-    # 💡 避坑指南：不强行覆写 entrypoint，让官方镜像用自带的轻量脚本高内聚启动，最稳妥
 
+# -------------------------------------------------------------
+# 🌐 工业级底层规则：构建 192.168.10.0/24 静态专属业务内网
+# -------------------------------------------------------------
 networks:
-  geo-net:
+  geo-static-net:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.10.0/24
