@@ -423,7 +423,7 @@ func main() {
                 SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
 
 		case "roads":
-			// 🎯 核心修正：利用 Find_SRID 动态对齐坐标系，确保 way 无论是 4326 还是 3857，&& 都能完美命中空间索引
+			// 🎯 彻底去掉 && 拦截，不管前端看哪里、怎么缩放，只要请求 roads 瓦片，一律全量把这 6 条线切片给前端
 			mvtQuery = `
                 WITH tilegeom AS (
                     SELECT osm_id, 
@@ -431,14 +431,12 @@ func main() {
                            ST_AsMVTGeom(
                                ST_Transform(way, 3857), 
                                ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
-                               4096, 64, true
+                               4096, 64, false -- 保持为 false，绝不裁剪破坏几何
                            ) AS geom
                     FROM planet_osm_line
                     WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)
-                      AND way && ST_Transform(ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), Find_SRID('public', 'planet_osm_line', 'way'))
                 )
                 SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom WHERE geom IS NOT NULL;`
-
 		default:
 			http.Error(w, "Layer not found", http.StatusNotFound)
 			return

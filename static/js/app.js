@@ -66,10 +66,11 @@ map.on('load', () => {
         'id': 'roads-layer-line', 
         'type': 'line', 
         'source': 'roads-mvt-source', 
-        'source-layer': 'roads', // 必须严格对齐 Go 中 ST_AsMVT 的第二个参数
+        'source-layer': 'roads', 
         'layout': { 
             'line-join': 'round', 
-            'line-cap': 'round' 
+            'line-cap': 'round',
+            'visibility': 'visible' 
         },
         'paint': {
             'line-color': '#00FFCC', // 极客荧光青
