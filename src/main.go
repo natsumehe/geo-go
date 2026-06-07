@@ -431,22 +431,18 @@ func main() {
 			dbErr = db.QueryRow(mvtQuery, z, x, y).Scan(&localTileData)
 
 		case "roads":
+			// 🎯 保持 Go 代码的动态弹性：不需要改成硬编码数字！
 			mvtQuery := `
-                WITH tilegeom AS (
-                    SELECT 
-                        osm_id, 
-                        name,
-                        ST_AsMVTGeom(
-                            ST_Transform(way, 3857), 
-                            ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
-                            4096, 64, true
-                        ) AS geom
-                    FROM planet_osm_line
-                    WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)
-                      -- 🎯 空间对齐核心：让真实的几何数据去碰撞前端发来的动态瓦片（如 13/6853/3342）
-                      AND ST_Transform(way, 3857) && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
-                )
-                SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom WHERE geom IS NOT NULL;`
+    WITH tilegeom AS (
+        SELECT osm_id, name,
+               ST_AsMVTGeom(way, ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 4096, 64, true) AS geom
+        FROM planet_osm_line
+        WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)
+          AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
+    )
+    SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom WHERE geom IS NOT NULL;`
+
+			// 🎯 Go 会在这一步将动态接收到的 z, x, y 补位到 $1, $2, $3 中去
 			dbErr = db.QueryRow(mvtQuery, z, x, y).Scan(&localTileData)
 
 		default:

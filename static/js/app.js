@@ -17,7 +17,7 @@ const SHANGHAI_BOUNDS = [
 // ==========================================
 const map = new maplibregl.Map({
     container: 'map',
-    center: [121.1132, 30.9305], // 精准空降：沈海高速嘉定段正上方
+    center: [121.176, 31.423], // 精准空降：沈海高速嘉定段正上方
     zoom: 13,
     maxBounds: SHANGHAI_BOUNDS,
     
