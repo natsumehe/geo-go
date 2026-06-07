@@ -426,17 +426,18 @@ func main() {
 			// 🎯 彻底去掉 && 拦截，不管前端看哪里、怎么缩放，只要请求 roads 瓦片，一律全量把这 6 条线切片给前端
 			mvtQuery = `
                 WITH tilegeom AS (
-                    SELECT osm_id, 
-                           '沈海高速' AS name, 
-                           ST_AsMVTGeom(
-                               ST_Transform(way, 3857), 
-                               ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
-                               4096, 64, false -- 保持为 false，绝不裁剪破坏几何
-                           ) AS geom
-                    FROM planet_osm_line
-                    WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)
-                )
-                SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom WHERE geom IS NOT NULL;`
+    SELECT 
+        osm_id, 
+        name,
+        ST_AsMVTGeom(
+            ST_Transform(way, 3857), -- 🎯 强行将 way 转换到 3857
+            ST_SetSRID(ST_TileEnvelope(13, 6852, 3321), 3857), 
+            4096, 64, false -- 🎯 设为 false，强行不裁剪，暴露真实映射值
+        ) AS geom
+    FROM planet_osm_line
+    WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)
+)
+SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom;`
 		default:
 			http.Error(w, "Layer not found", http.StatusNotFound)
 			return
