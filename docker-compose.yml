@@ -34,7 +34,7 @@ services:
     # 🎯 核心核心：把宿主机的证书物理注入容器内部
     volumes:
       - /ssl:/ssl:ro  # :ro 表示容器内只读，保护证书安全
-      - ./:/app/static:ro
+      - ./static:/app/static:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
