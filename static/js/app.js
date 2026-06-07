@@ -205,3 +205,111 @@ function appendAlarmDOM(driver, fence, time) {
     `;
     logContainer.insertBefore(item, logContainer.firstChild);
 }
+
+// ==========================================
+// 🧭 Valhalla 导航算路总线
+// ==========================================
+let routingPoints = []; // 存储坐标栈 [起点, 终点]
+let routeMarkers = [];  // 存储图面大头针
+
+// 监听地图的点击事件（按住 Shift + 点击 图面来选定起终点）
+map.on('click', (e) => {
+    if (routingPoints.length >= 2) {
+        // 如果已经有了一条线，再次点击时清空旧导航
+        clearRouting();
+    }
+
+    const coords = [e.lngLat.lng, e.lngLat.lat];
+    routingPoints.push(coords);
+
+    // 在点击处插一个霓虹绿/红的科幻大头针
+    const markerColor = routingPoints.length === 1 ? '#00FFCC' : '#FF3B30';
+    const marker = new maplibregl.Marker({ color: markerColor })
+        .setLngLat(coords)
+        .addTo(map);
+    routeMarkers.push(marker);
+
+    // 当点满两个点（起点和终点），立刻触发后端 Valhalla 算路
+    if (routingPoints.length === 2) {
+        calculateRoute(routingPoints[0], routingPoints[1]);
+    }
+});
+
+// 核心函数：向前发请求请求 Valhalla 引擎
+function calculateRoute(start, end) {
+    // 🎯 构造 Valhalla 要求的标准 JSON 请求体 (汽车驾驶模式: auto)
+    const requestJson = {
+        locations: [
+            { lon: start[0], lat: start[1], type: "break" },
+            { lon: end[0], lat: end[1], type: "break" }
+        ],
+        costing: "auto",
+        directions_options: { units: "km", language: "zh-CN" }
+    };
+
+    // 💡 针对 8002 端口的 Valhalla 路由服务发起高能物理点查
+    // 实际生产中建议用 Nginx 反向代理将 8002 映射到 /route 路径下以规避跨域
+    fetch(`http://${window.location.hostname}:8002/route?json=${JSON.stringify(requestJson)}`)
+        .then(res => {
+            if (!res.ok) throw new Error("导航路径生成失败");
+            return res.json();
+        })
+        .then(data => {
+            // Valhalla 返回的是一条经过压缩的 Polyline，我们需要将其解析为线段坐标串
+            const coordinates = decodeValhallaShape(data.trip.legs[0].shape);
+            
+            // 将导航线绘制到暗黑底图上
+            renderRouteLine(coordinates);
+            
+            console.log(`🟢 算路成功：全程 ${data.trip.summary.length} 公里，预计耗时 ${data.trip.summary.time} 秒`);
+        })
+        .catch(err => console.error("❌ 导航总线报错:", err));
+}
+
+// 解压 Valhalla 形状拓扑字符串的核心算法 (6位精度 Polyline 解码)
+function decodeValhallaShape(str) {
+    let index = 0, len = str.length;
+    let lat = 0, lng = 0;
+    let coordinates = [];
+    while (index < len) {
+        let b, shift = 0, result = 0;
+        do { b = str.charCodeAt(index++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+        let dlat = ((result & 1) ? ~(result >> 1) : (result >> 1)); lat += dlat;
+        shift = 0; result = 0;
+        do { b = str.charCodeAt(index++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+        let dlng = ((result & 1) ? ~(result >> 1) : (result >> 1)); lng += dlng;
+        coordinates.push([lng * 1e-6, lat * 1e-6]);
+    }
+    return coordinates;
+}
+
+// 在 WebGL 画布上动态渲染霓虹色电子流导航路径
+function renderRouteLine(coordinates) {
+    if (map.getLayer('navigation-line')) map.removeLayer('navigation-line');
+    if (map.getSource('navigation-source')) map.removeSource('navigation-source');
+
+    map.addSource('navigation-source', {
+        'type': 'geojson',
+        'data': { 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': coordinates } }
+    });
+
+    map.addLayer({
+        'id': 'navigation-line',
+        'type': 'line',
+        'source': 'navigation-source',
+        'layout': { 'line-join': 'round', 'line-cap': 'round' },
+        // 🎯 赛博霓虹粉：在暗黑系统下呈现极强的视觉张力
+        'paint': {
+            'line-color': '#FF2D55', 
+            'line-width': 6,
+            'line-opacity': 0.9
+        }
+    }, 'fences-layer-fill'); // 确保线层依然在电子围栏下方，维持层序
+}
+
+function clearRouting() {
+    routingPoints = [];
+    routeMarkers.forEach(m => m.remove());
+    routeMarkers = [];
+    if (map.getLayer('navigation-line')) map.removeLayer('navigation-line');
+}
