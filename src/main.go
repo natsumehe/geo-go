@@ -375,13 +375,6 @@ func main() {
 	http.HandleFunc("/fences", FencesHandle)
 	http.HandleFunc("/ws", WsHandler)
 
-	// ==========================================
-	// 🧭 隧道：将 HTTPS /route 请求卸载给本机 Valhalla 容器
-	// ==========================================
-
-	valhallaURL, _ := url.Parse("http://valhalla-service:8002")
-	valhallaProxy := httputil.NewSingleHostReverseProxy(valhallaURL)
-
 	// 🧭 隧道：将前端加密的 /route 请求透明穿透给 192.168.10.30 容器
 	valhallaURL, _ := url.Parse("http://192.168.10.30:8002")
 	valhallaProxy := httputil.NewSingleHostReverseProxy(valhallaURL)
