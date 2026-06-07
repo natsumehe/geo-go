@@ -400,10 +400,14 @@ func main() {
 		layerName := parts[0]
 		z, errZ := strconv.Atoi(parts[1])
 		x, errX := strconv.Atoi(parts[2])
+
+		// 🎯 【核心修复】：先剥离 Query 参数，再彻底去掉 ".mvt" 后缀，只留纯数字
 		yStr := strings.Split(parts[3], "?")[0]
+		yStr = strings.ReplaceAll(yStr, ".mvt", "")
 		y, errY := strconv.Atoi(yStr)
 
 		if errZ != nil || errX != nil || errY != nil {
+			log.Printf(" [❌ 瓦片坐标解析失败]: Z=%s, X=%s, Y_Raw=%s, 错误: %v", parts[1], parts[2], parts[3], errY)
 			http.Error(w, "Invalid Tile Coordinates", http.StatusBadRequest)
 			return
 		}
