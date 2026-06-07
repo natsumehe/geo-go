@@ -18,15 +18,14 @@ services:
     # 🎯 核心：启动命令必须精准咬合容器内的 /custom_tiles/valhalla.json
     command: ["valhalla_service", "/custom_tiles/valhalla.json", "1"]
 
-# =========================================================================
+  # =========================================================================
   # 🚀 Go 业务网关后端层
   # =========================================================================
   geo-go-app:
     build:
       context: .
       dockerfile: Dockerfile
-
-      container_name: geo-go-app-1
+    container_name: geo-go-app-1  # 🎯 修正：缩进已提至服务层级，不再属于 build 内部
     restart: always
     ports:
       - "8080:8080"
@@ -54,7 +53,7 @@ services:
     container_name: geo-go-redis-1
     restart: always
     ports:
-    - "6379:6379"
+      - "6379:6379"
     volumes:
       - redis-data:/data
     command: redis-server --appendonly yes
