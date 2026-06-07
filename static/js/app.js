@@ -1,5 +1,5 @@
 // ==========================================
-// 🛰️ 生产级自适应通信网关协议洗法
+// 🛰️ 生产级自适应通信网关协议
 // ==========================================
 const isHTTPS = window.location.protocol === 'https:';
 const BASE_URL  = `${window.location.protocol}//${window.location.host}`;
@@ -13,14 +13,13 @@ const SHANGHAI_BOUNDS = [
 ];
 
 // ==========================================
-// 🗺️ 初始化地图物理渲染引擎 (极简纯黑偏好配置)
+// 🗺️ 初始化地图物理渲染引擎 (精准空降至数据老巢)
 // ==========================================
 const map = new maplibregl.Map({
     container: 'map',
-    center: [121.176, 31.423], // 精准空降：沈海高速嘉定段正上方
+    center: [121.176, 31.423], // 🎯 精准空降：沈海高速嘉定段正上方（对应瓦片 13/6853/3342）
     zoom: 13,
     maxBounds: SHANGHAI_BOUNDS,
-    
     style: 'https://demotiles.maplibre.org/style.json',
 });
 
@@ -30,18 +29,24 @@ const map = new maplibregl.Map({
 map.on('load', () => {
     console.log("🟢 WebGL 空间画布就绪，开始加载 MVT 管道...");
 
-    // 1. 注册数据源：强行绑定你的 Go 后端多图层瓦片接口
+    // 1. 注册道路数据源（沈海高速）
     map.addSource('roads-mvt-source', {
         'type': 'vector',
         'tiles': [ window.location.origin + '/tiles/roads/{z}/{x}/{y}.mvt' ]
     });
 
-    // 2. 挂载地理围栏渲染图层 (淡淡的警示红)
+    // 2. 注册地理围栏数据源（🎯 已修复：补全此前缺失的数据源，杜绝阻断报错）
+    map.addSource('fences-mvt-source', {
+        'type': 'vector',
+        'tiles': [ window.location.origin + '/tiles/fences/{z}/{x}/{y}.mvt' ]
+    });
+
+    // 3. 挂载地理围栏渲染图层 (淡淡的警示红)
     map.addLayer({
         'id': 'fences-layer-fill', 
         'type': 'fill', 
         'source': 'fences-mvt-source', 
-        'source-layer': 'fences',
+        'source-layer': 'fences', // 必须与后端 SQL 中 ST_AsMVT 的图层名一致
         'paint': { 'fill-color': '#ff3b30', 'fill-opacity': 0.15 }
     });
     map.addLayer({
@@ -52,15 +57,15 @@ map.on('load', () => {
         'paint': { 'line-color': '#5a100c', 'line-width': 1.5 }
     });
 
-    // 3. 核心修复：挂载沈海高速核心线层（荧光青色，确保图层在最上方正常穿透）
+    // 4. 挂载沈海高速核心线层（荧光青色，加粗确保清晰可见）
     map.addLayer({
         'id': 'roads-layer-line', 
         'type': 'line', 
         'source': 'roads-mvt-source', 
-        'source-layer': 'roads', // 🎯 必须和 SQL 里 ST_AsMVT(..., 'roads') 一致
+        'source-layer': 'roads', // 必须与后端 SQL 中 ST_AsMVT 的图层名一致
         'layout': { 'line-join': 'round', 'line-cap': 'round' },
         'paint': {
-            'line-color': '#00FFCC', // 荧光青
+            'line-color': '#00FFCC', 
             'line-width': 8,
             'line-opacity': 1.0
         }
@@ -155,7 +160,7 @@ function loadHistoricalAlarms() {
 }
 
 // ==========================================
-// 🔀 核心总线：生产级加密 WSS 全双工通信器
+// 🔀 核心总线：全双工通信器 (WS/WSS 自适应)
 // ==========================================
 function connectWebSocket() {
     const ws = new WebSocket(WS_URL);
