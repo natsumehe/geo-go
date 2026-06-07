@@ -8,23 +8,25 @@ services:
       - "443:443"
       - "8080:8080"
     environment:
-      # 🎯 优化：利用 extra_hosts 引入宿主机别名，防止 172.17.0.1 漂移导致连不上 DB
+      # 🎯 穿透宿主机访问外部 PostGIS 数据库
       - DB_URL=postgres://docker:floder123@host.docker.internal:5432/gis_db?sslmode=disable
-      - REDIS_URL=redis:6379
+      # 🎯 修正：显式声明 Redis 连接串（请确保 Go 代码中解析该变量时支持 host:port 格式）
+      - REDIS_URL=geo-go-redis-1:6379
     restart: always
     depends_on:
       - redis
       - valhalla-service
     volumes:
-      # 【物理挂载】SSL 真证书绝对路径穿透
+      # 【物理挂载】宿主机 SSL 证书绝对路径只读穿透（完美解决 open /ssl/cert.pem 报错）
       - /ssl:/ssl:ro
     extra_hosts:
-      - "host.docker.internal:host-gateway" # 允许 Linux 容器通过该域名直接穿透访问宿主机服务
+      - "host.docker.internal:host-gateway"
 
   redis:
     image: redis:7-alpine
     container_name: geo-go-redis-1
     restart: always
+    # 💡 提示：无需暴露 6379 给外网，Compose 内部局域网默认互通，更安全
 
   valhalla-service:
     image: ghcr.io/valhalla/valhalla:latest
@@ -32,10 +34,9 @@ services:
     restart: always
     ports:
       - "8002:8002"
-    # 🎯 提醒：请检查 valhalla.json 内部的路径配置是否与挂载点完全一致
-    entrypoint: ["valhalla_service", "/etc/valhalla/valhalla.json", "1"]
     volumes:
-      - /root/valhalla-server/valhalla.json:/etc/valhalla/valhalla.json:ro
-      # 🎯 假设你的 JSON 里的 tile_dir 配置为 "/custom_tiles"，此处保持一致。
-      # 如果遇到了权限问题（Permission Denied），可尝试在宿主机执行: chmod -R 777 /root/valhalla-server/custom_tiles
-      - /root/valhalla-server/custom_tiles:/custom_tiles
+      # 🎯 将宿主机的配置文件挂载到容器默认读取位置
+      - /root/valhalla-server/valhalla.json:/custom_files/valhalla.json:ro
+      # 🎯 将解构好的上海路网拓扑碎文件目录挂载进容器
+      - /root/valhalla-server/custom_tiles:/custom_files/valhalla_tiles
+    # 💡 避坑指南：不强行覆写 entrypoint，让官方镜像用自带的轻量脚本高内聚启动，最稳妥
