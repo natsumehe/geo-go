@@ -376,6 +376,9 @@ func main() {
 	// ==========================================
 	// ⚡ PostGIS MVT 多图层矢量裁剪服务
 	// ==========================================
+	// ==========================================
+	// ⚡ PostGIS MVT 多图层矢量裁剪服务（修正版）
+	// ==========================================
 	http.HandleFunc("/tiles/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
@@ -405,13 +408,14 @@ func main() {
 			return
 		}
 
-		var tileData []byte
-		var queryErr error
+		// 🎯 局部变量彻底解耦，防止 switch 块内发生并发覆盖污染
+		var localTileData []byte
+		var dbErr error
 
-		// 🎯 优化解法：将各分支的数据库处理逻辑闭环封装在各自的 case 内
 		switch layerName {
 
 		case "fences":
+			// 🎯 修正核心：强制让 area 正向转换为 3857 去碰撞瓦片，完美命中空间索引
 			mvtQuery := `
                 WITH tilegeom AS (
                     SELECT id, name, 
@@ -421,10 +425,10 @@ func main() {
                                4096, 64, true
                            ) AS geom
                     FROM fences
-                    WHERE area && ST_Transform(ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), ST_SRID(area))
+                    WHERE ST_Transform(area, 3857) && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
                 )
                 SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
-			queryErr = db.QueryRow(mvtQuery, z, x, y).Scan(&tileData)
+			dbErr = db.QueryRow(mvtQuery, z, x, y).Scan(&localTileData)
 
 		case "roads":
 			mvtQuery := `
@@ -434,23 +438,24 @@ func main() {
                         name,
                         ST_AsMVTGeom(
                             ST_Transform(way, 3857), 
-                            ST_SetSRID(ST_TileEnvelope(13, 6852, 3321), 3857), 
-                            4096, 64, false 
+                            ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
+                            4096, 64, true
                         ) AS geom
                     FROM planet_osm_line
                     WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)
+                      -- 🎯 空间对齐核心：让真实的几何数据去碰撞前端发来的动态瓦片（如 13/6853/3342）
+                      AND ST_Transform(way, 3857) && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
                 )
                 SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom WHERE geom IS NOT NULL;`
-			// 🎯 修复点：硬编码测试，不需要往后端喂动态变量参数
-			queryErr = db.QueryRow(mvtQuery).Scan(&tileData)
+			dbErr = db.QueryRow(mvtQuery, z, x, y).Scan(&localTileData)
 
 		default:
 			http.Error(w, "Layer not found", http.StatusNotFound)
 			return
 		}
 
-		// 🎯 统一对执行结果做拦截断流判定
-		if queryErr != nil || len(tileData) == 0 {
+		// 🎯 拦截断流：如果数据库报错，或者切片长度等于 0，证明该区域无数据，优雅返回 204
+		if dbErr != nil || len(localTileData) == 0 {
 			w.Header().Del("Content-Type")
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -459,7 +464,7 @@ func main() {
 		w.Header().Set("Content-Type", "application/vnd.mapbox-vector-tile")
 		w.Header().Set("Cache-Control", "public, max-age=600")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(tileData)
+		_, _ = w.Write(localTileData)
 	})
 
 	staticDir := "/app/static"

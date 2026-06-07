@@ -17,7 +17,7 @@ const SHANGHAI_BOUNDS = [
 // ==========================================
 const map = new maplibregl.Map({
     container: 'map',
-    center: [121.1572, 31.3912], // 精准空降：沈海高速嘉定段正上方
+    center: [121.1132, 30.9305], // 精准空降：沈海高速嘉定段正上方
     zoom: 13,
     maxBounds: SHANGHAI_BOUNDS,
     
@@ -49,7 +49,7 @@ map.on('load', () => {
         'type': 'line', 
         'source': 'fences-mvt-source', 
         'source-layer': 'fences',
-        'paint': { 'line-color': '#ff3b30', 'line-width': 1.5 }
+        'paint': { 'line-color': '#5a100c', 'line-width': 1.5 }
     });
 
     // 3. 核心修复：挂载沈海高速核心线层（荧光青色，确保图层在最上方正常穿透）
