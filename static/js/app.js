@@ -56,18 +56,39 @@ map.on('load', () => {
         'source-layer': 'fences',
         'paint': { 'line-color': '#5a100c', 'line-width': 1.5 }
     });
-
-    // 4. 挂载沈海高速核心线层（荧光青色，加粗确保清晰可见）
+    
+    // 挂载全量自适应道路网线层
     map.addLayer({
         'id': 'roads-layer-line', 
         'type': 'line', 
         'source': 'roads-mvt-source', 
-        'source-layer': 'roads', // 必须与后端 SQL 中 ST_AsMVT 的图层名一致
+        'source-layer': 'roads', 
         'layout': { 'line-join': 'round', 'line-cap': 'round' },
         'paint': {
-            'line-color': '#00FFCC', 
-            'line-width': 8,
-            'line-opacity': 1.0
+            // 🎯 根据道路等级（highway）动态分流上色
+            'line-color': [
+                'match',
+                ['get', 'highway'],
+                'motorway', '#00FFCC', // 高速：荧光青
+                'trunk', '#ff9500',    // 国道/主干道：明橙
+                'primary', '#ffcc00',  // 省道：金黄
+                '#8e8e93'              // 其余城市小路：深灰
+            ], 
+            // 🎯 根据道路等级动态分配线宽
+            'line-width': [
+                'match',
+                ['get', 'highway'],
+                'motorway', 6,
+                'trunk', 4,
+                'primary', 3,
+                1.5 // 普通小路：细线
+            ],
+            'line-opacity': [
+                'match',
+                ['get', 'highway'],
+                'motorway', 1.0,
+                0.7 // 非主要道路提供透明度，突出核心路网
+            ]
         }
     });
 

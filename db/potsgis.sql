@@ -27,3 +27,26 @@ INSERT INTO fences (name, area) VALUES (
     '外滩禁行区', 
     ST_GeomFromText('POLYGON((121.485 31.245, 121.500 31.245, 121.500 31.230, 121.485 31.230, 121.485 31.245))', 4326)
 );
+
+-- 1. 添加一个专门存储 EPSG:3857 几何图形的列
+ALTER TABLE planet_osm_line ADD COLUMN IF NOT EXISTS way_3857 geometry(Geometry, 3857);
+
+-- 2. 将原有的 way 数据一次性转换并灌入新列（数据量大时可能需要几分钟，请耐心等待）
+UPDATE planet_osm_line SET way_3857 = ST_Transform(way, 3857) WHERE way IS NOT NULL;
+
+-- 3. 为这个新列建立高效率的 GIST 空间索引（这是后续彻底免除全表扫描的关键）
+CREATE INDEX IF NOT EXISTS planet_osm_line_way3857_idx ON planet_osm_line USING gist(way_3857);
+
+-- 4. 释放空间并清理碎片
+VACUUM ANALYZE planet_osm_line;
+
+
+-- 1. 激活 btree_gist 核心扩展（需要超级用户权限，如 postgres 账号）
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
+-- 2. 重新执行刚才失败的复合索引创建语句（权限补全后即可完美通行）
+CREATE INDEX IF NOT EXISTS planet_osm_line_way3857_highway_idx 
+ON planet_osm_line USING gist(way_3857, highway);
+
+-- 3. 重新统计信息
+VACUUM ANALYZE planet_osm_line;

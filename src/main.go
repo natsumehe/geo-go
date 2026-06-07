@@ -430,24 +430,42 @@ func main() {
 			dbErr = db.QueryRow(mvtQuery, z, x, y).Scan(&localTileData)
 
 		case "roads":
-			// 🎯 终极方案：使用 ST_Transform(way, 3857) 确保底表几何图形彻底转化为 3857 坐标，与瓦片边界完美对齐
-			mvtQuery := `
+			// 🎯 动态金字塔抽稀 SQL：根据不同 Zoom 层级过滤道路等级与精简几何节点
+			var highwayFilter string
+			var tolerance float64
+
+			if z < 11 {
+				// 缩小状态：只看高速和主干道，高强度抽稀（容差 100 米），防止大范围吞噬内存
+				highwayFilter = "highway IN ('motorway', 'trunk')"
+				tolerance = 100.0
+			} else if z >= 11 && z < 14 {
+				// 中等状态：加入省道和次干道，中度抽稀（容差 20 米）
+				highwayFilter = "highway IN ('motorway', 'trunk', 'primary', 'secondary')"
+				tolerance = 20.0
+			} else {
+				// 放大状态 (z >= 14)：全量加载所有道路（包括小路），不做抽稀（容差 0 米）保证精度
+				highwayFilter = "highway IS NOT NULL"
+				tolerance = 0.0
+			}
+
+			mvtQuery := fmt.Sprintf(`
                 WITH tilegeom AS (
-                    SELECT osm_id, name,
+                    SELECT osm_id, name, highway,
                            ST_AsMVTGeom(
-                               ST_Transform(way, 3857), 
+                               -- 💡 使用 ST_SimplifyPreserveTopology 动态简化几何，大幅削减并发传输的字节量
+                               ST_SimplifyPreserveTopology(way_3857, %f), 
                                ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857), 
                                4096, 64, true
                            ) AS geom
                     FROM planet_osm_line
-                    WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)
-                      AND ST_Transform(way, 3857) && ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857)
+                    WHERE %s
+                      AND way_3857 && ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857)
                 )
-                SELECT COALESCE(ST_AsMVT(tilegeom.*, 'roads'), ''::bytea)::bytea FROM tilegeom;`
+                SELECT COALESCE(ST_AsMVT(tilegeom.*, 'roads'), ''::bytea)::bytea FROM tilegeom;`, tolerance, highwayFilter)
 
 			dbErr = db.QueryRow(mvtQuery, z, x, y).Scan(&localTileData)
 			if dbErr != nil {
-				log.Printf("[🔎 Go 数据库层报错]: %v", dbErr)
+				log.Printf("[🔎 Go 道路图层全量查询报错]: %v", dbErr)
 			}
 
 		default:
