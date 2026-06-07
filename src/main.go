@@ -376,9 +376,6 @@ func main() {
 	// ==========================================
 	// ⚡ PostGIS MVT 多图层矢量裁剪服务
 	// ==========================================
-	// ==========================================
-	// ⚡ PostGIS MVT 多图层矢量裁剪服务（修正版）
-	// ==========================================
 	http.HandleFunc("/tiles/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
@@ -401,9 +398,8 @@ func main() {
 		z, errZ := strconv.Atoi(parts[1])
 		x, errX := strconv.Atoi(parts[2])
 
-		// 🎯 【核心修复】：先剥离 Query 参数，再彻底去掉 ".mvt" 后缀，只留纯数字
+		// 🎯 【统一清洗层】：在最外层彻底洗净 Y 轴参数，彻底杜绝局部作用域变量覆盖
 		yStr := strings.Split(parts[3], "?")[0]
-		yStr = strings.ReplaceAll(yStr, ".mvt", "")
 		y, errY := strconv.Atoi(yStr)
 
 		if errZ != nil || errX != nil || errY != nil {
@@ -412,58 +408,54 @@ func main() {
 			return
 		}
 
-		// 🎯 局部变量彻底解耦，防止 switch 块内发生并发覆盖污染
 		var localTileData []byte
 		var dbErr error
 
 		switch layerName {
 
 		case "fences":
-			// 🎯 修正核心：强制让 area 正向转换为 3857 去碰撞瓦片，完美命中空间索引
+			// 🎯 显式添加 $1::int, $2::int, $3::int 强转，确保驱动底层参数类型绝对对齐
 			mvtQuery := `
                 WITH tilegeom AS (
                     SELECT id, name, 
                            ST_AsMVTGeom(
                                ST_Transform(area, 3857), 
-                               ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 
+                               ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857), 
                                4096, 64, true
                            ) AS geom
                     FROM fences
-                    WHERE ST_Transform(area, 3857) && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
+                    WHERE ST_Transform(area, 3857) && ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857)
                 )
                 SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
 			dbErr = db.QueryRow(mvtQuery, z, x, y).Scan(&localTileData)
 
 		case "roads":
-			// 🎯 核心调试点：把前端传过来的原始字符串和解析后的数字直接打印出来
-			log.Printf("[🔎 Go 接收层探测] 原始 URL 路径片段: layer=%s, Z_raw=%s, X_raw=%s, Y_raw=%s", layerName, parts[1], parts[2], parts[3])
-
-			yStr := strings.Split(parts[3], "?")[0]
-			yStr = strings.ReplaceAll(yStr, ".mvt", "")
-			y, errY := strconv.Atoi(yStr)
-
-			log.Printf("[🔎 Go 解析层探测] 转换后的数字: Z_int=%d, X_int=%d, Y_int=%d | Y转换解析错误=%v", z, x, y, errY)
-
+			// 🎯 【清除内耗】：删除了内部重复的 yStr/y 声明，直接沿用外层解析完毕的 z, x, y。并强制添加 ::int 约束
 			mvtQuery := `
                 WITH tilegeom AS (
                     SELECT osm_id, name,
-                           ST_AsMVTGeom(way, ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 4096, 64, true) AS geom
+                           ST_AsMVTGeom(
+                               way, 
+                               ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857), 
+                               4096, 64, true
+                           ) AS geom
                     FROM planet_osm_line
                     WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)
-                      AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
+                      AND way && ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857)
                 )
-                SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom WHERE geom IS NOT NULL;`
+                SELECT COALESCE(ST_AsMVT(tilegeom.*, 'roads'), ''::bytea)::bytea FROM tilegeom;`
 
 			dbErr = db.QueryRow(mvtQuery, z, x, y).Scan(&localTileData)
 			if dbErr != nil {
 				log.Printf("[🔎 Go 数据库层报错]: %v", dbErr)
 			}
+
 		default:
 			http.Error(w, "Layer not found", http.StatusNotFound)
 			return
 		}
 
-		// 🎯 拦截断流：如果数据库报错，或者切片长度等于 0，证明该区域无数据，优雅返回 204
+		// 🎯 拦截断流：精确拦截
 		if dbErr != nil || len(localTileData) == 0 {
 			w.Header().Del("Content-Type")
 			w.WriteHeader(http.StatusNoContent)
