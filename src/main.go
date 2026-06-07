@@ -439,10 +439,10 @@ func main() {
 			mvtQuery := `
     WITH tilegeom AS (
         SELECT osm_id, name,
-               ST_AsMVTGeom(way, ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857), 4096, 64, true) AS geom
+               ST_AsMVTGeom(way, ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857), 4096, 64, true) AS geom
         FROM planet_osm_line
         WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)
-          AND way && ST_SetSRID(ST_TileEnvelope($1, $2, $3), 3857)
+          AND way && ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857)
     )
     SELECT ST_AsMVT(tilegeom.*, 'roads') FROM tilegeom WHERE geom IS NOT NULL;`
 
