@@ -1,5 +1,5 @@
 // ==========================================
-// 🛰️ 自适应通信网关协议
+// 🛰️ 自适应通信网关协议与上海边界
 // ==========================================
 const BASE_URL  = `${window.location.protocol}//${window.location.host}`;
 const WS_URL    = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
@@ -14,19 +14,16 @@ const SHANGHAI_BOUNDS = [
 // ==========================================
 const map = new maplibregl.Map({
     container: 'map',
-    center: [121.145, 31.445], // 🎯 精准对齐数据老巢
-    zoom: 13,
+    center: [121.234, 31.415], 
+    zoom: 10,
     maxBounds: SHANGHAI_BOUNDS,
-    // 💡 官方高质量赛博暗黑主题样式
     style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
 });
 
 map.on('load', () => {
     console.log("🟢 暗黑WebGL画布加载就绪，开始按安全优先级挂载矢量管道...");
 
-    // ------------------------------------------
-    // 📦 数据源注册（底表分离）
-    // ------------------------------------------
+    // 📦 数据源注册
     map.addSource('roads-mvt-source', {
         'type': 'vector',
         'tiles': [ window.location.origin + '/tiles/roads/{z}/{x}/{y}.mvt' ]
@@ -37,11 +34,7 @@ map.on('load', () => {
         'tiles': [ window.location.origin + '/tiles/fences/{z}/{x}/{y}.mvt' ]
     });
 
-    // ------------------------------------------
-    // 🎨 图层渲染：严格控制上下层序 (Roads在下，Fences在顶)
-    // ------------------------------------------
-    
-    // 1. [底层] 挂载全量自适应道路网线层
+    // 1. [底层] 道路网线层
     map.addLayer({
         'id': 'roads-layer-line', 
         'type': 'line', 
@@ -51,10 +44,10 @@ map.on('load', () => {
         'paint': {
             'line-color': [
                 'match', ['get', 'highway'],
-                'motorway', '#00FFCC', // 高速：荧光青
-                'trunk', '#FF9500',    // 国道：明橙
-                'primary', '#FFCC00',  // 省道：金黄
-                '#3A3A3C'              // 城市内部小路：深夜灰
+                'motorway', '#00FFCC', 
+                'trunk', '#FF9500',    
+                'primary', '#FFCC00',  
+                '#3A3A3C'              
             ], 
             'line-width': [
                 'match', ['get', 'highway'],
@@ -71,7 +64,7 @@ map.on('load', () => {
         }
     });
 
-    // 2. [中层] 新增道路名称文字标注图层
+    // 2. [中层] 道路文字标注
     map.addLayer({
         'id': 'roads-layer-text',
         'type': 'symbol',
@@ -92,7 +85,7 @@ map.on('load', () => {
         }
     });
 
-    // 3. [顶层] 围栏图层（最后挂载，确保压在所有道路的最上方）
+    // 3. [顶层] 围栏图层
     map.addLayer({
         'id': 'fences-layer-fill', 
         'type': 'fill', 
@@ -100,7 +93,7 @@ map.on('load', () => {
         'source-layer': 'fences', 
         'paint': { 
             'fill-color': '#FF3B30', 
-            'fill-opacity': 0.22 
+            'fill-opacity': 0.15 
         }
     });
 
@@ -116,14 +109,13 @@ map.on('load', () => {
         }
     });
 
-    // 初始化其余异步总线
+    // 初始化外部总线
     initDeviceDropdown();
-    loadHistoricalAlarms();
     connectWebSocket();
 });
 
 // ==========================================
-// 📶 业务核心模块
+// 📶 业务核心模块：采集轨迹（流式渲染至右侧面板）
 // ==========================================
 function initDeviceDropdown() {
     const fetchList = () => {
@@ -168,14 +160,65 @@ function switchDeviceHistory(deviceId) {
                 'layout': { 'line-join': 'round', 'line-cap': 'round' },
                 'paint': { 'line-color': '#FFD60A', 'line-width': 4.5 } 
             });
+
+            // 🎯 提取并向右侧轨迹看板灌入采集坐标流
+            updateTrackPanel(deviceId, validCoords.slice(-10));
             map.easeTo({ center: validCoords[validCoords.length - 1], zoom: 14, duration: 500 });
         }).catch(err => console.error('❌ 历史轨迹点查错误:', err));
 }
 
-function loadHistoricalAlarms() {
-    fetch(`${BASE_URL}/alarms`).then(res => res.json()).then(logs => {
-        if (!logs) return; logs.forEach(log => appendAlarmDOM(log.driver, log.fence, log.time));
-    }).catch(err => console.error('❌ 拉取报警记录失败:', err));
+// 更新右侧采集轨迹流水
+function updateTrackPanel(id, lastCoords) {
+    const container = document.getElementById('collected-tracks-box');
+    if (!container) return;
+    container.innerHTML = `<div style="color:#FFD60A;margin-bottom:8px;">🛰️ 设备 [${id}] 最新采集流:</div>`;
+    lastCoords.reverse().forEach((coord, i) => {
+        const item = document.createElement('div');
+        item.style.fontSize = '12px';
+        item.style.borderBottom = '1px dashed #2C2C2E';
+        item.style.padding = '4px 0';
+        item.innerHTML = `<span style="color:#8E8E93;">[#${i}]</span> 经: ${coord[0].toFixed(5)} | 纬: ${coord[1].toFixed(5)}`;
+        container.appendChild(item);
+    });
+}
+
+// 🎯 升级：实时触发且可物理关闭的违规弹窗
+function triggerAlarmPopup(driver, fence) {
+    let container = document.getElementById('dynamic-alarm-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'dynamic-alarm-container';
+        container.style.position = 'absolute';
+        container.style.top = '20px';
+        container.style.left = '50%';
+        container.style.transform = 'translateX(-50%)';
+        container.style.zIndex = '9999';
+        document.body.appendChild(container);
+    }
+    
+    const popup = document.createElement('div');
+    popup.style.background = 'rgba(28,28,30,0.95)';
+    popup.style.border = '2px solid #FF453A';
+    popup.style.borderRadius = '8px';
+    popup.style.padding = '15px';
+    popup.style.color = '#FFF';
+    popup.style.boxShadow = '0 0 20px rgba(255,69,58,0.4)';
+    popup.style.marginBottom = '10px';
+    popup.style.display = 'flex';
+    popup.style.justifyContent = 'space-between';
+    popup.style.alignItems = 'center';
+    popup.style.minWidth = '320px';
+
+    popup.innerHTML = `
+        <div>
+            <strong style="color:#FF453A;">🚨 实时违规闯区警报</strong><br>
+            <span style="font-size:13px;">对象: ${driver} | 区域: ${fence}</span>
+        </div>
+        <button onclick="this.parentElement.remove()" style="background:none;border:none;color:#8E8E93;font-size:18px;cursor:pointer;padding-left:15px;">✕</button>
+    `;
+    container.appendChild(popup);
+    // 10秒后自动淡出消失
+    setTimeout(() => { if (popup) popup.remove(); }, 10000);
 }
 
 function connectWebSocket() {
@@ -184,33 +227,19 @@ function connectWebSocket() {
         try {
             const data = JSON.parse(event.data);
             if (data.type === 'alarm') {
-                appendAlarmDOM(data.driver, data.fence, new Date().toLocaleTimeString('zh-CN', { hour12: false }));
+                triggerAlarmPopup(data.driver, data.fence);
             }
         } catch (e) {}
     };
     ws.onclose = () => { setTimeout(connectWebSocket, 5000); };
 }
 
-function appendAlarmDOM(driver, fence, time) {
-    const logContainer = document.getElementById('alarm-logs');
-    if (!logContainer) return;
-    const item = document.createElement('div');
-    item.className = 'log-item';
-    item.innerHTML = `
-        <span class="log-time" style="color: #FF453A;">${time}</span>
-        <strong>🚨 违规闯区存证</strong><br>
-        对象: ${driver} | 区域: ${fence}
-    `;
-    logContainer.insertBefore(item, logContainer.firstChild);
-}
-
 // ==========================================
-// 🧭 Valhalla 导航算路总线
+// 🧭 Valhalla 导航算路与路书中心
 // ==========================================
-let routingPoints = []; // 存储坐标栈 [起点, 终点]
-let routeMarkers = [];  // 存储图面大头针
+let routingPoints = []; 
+let routeMarkers = [];  
 
-// 监听地图的点击事件
 map.on('click', (e) => {
     if (routingPoints.length >= 2) {
         clearRouting();
@@ -218,6 +247,13 @@ map.on('click', (e) => {
 
     const coords = [e.lngLat.lng, e.lngLat.lat];
     routingPoints.push(coords);
+
+    // 🎯 动态更新坐标提取面板
+    if (routingPoints.length === 1) {
+        document.getElementById('start-coord-input').value = `${coords[0].toFixed(6)}, ${coords[1].toFixed(6)}`;
+    } else if (routingPoints.length === 2) {
+        document.getElementById('end-coord-input').value = `${coords[0].toFixed(6)}, ${coords[1].toFixed(6)}`;
+    }
 
     const markerColor = routingPoints.length === 1 ? '#00FFCC' : '#FF3B30';
     const marker = new maplibregl.Marker({ color: markerColor })
@@ -230,7 +266,6 @@ map.on('click', (e) => {
     }
 });
 
-// 核心函数：向前发请求请求 Valhalla 引擎
 function calculateRoute(start, end) {
     const requestJson = {
         locations: [
@@ -241,30 +276,50 @@ function calculateRoute(start, end) {
         directions_options: { units: "km", language: "zh-CN" }
     };
 
-    // 🎯 走同源相对路径经过 Go 安全隧道转发
     const url = `/route?json=${encodeURIComponent(JSON.stringify(requestJson))}`;
 
     fetch(url)
-        .then(res => {
-            if (!res.ok) throw new Error("导航路径生成失败");
-            return res.json();
-        })
+        .then(res => { if (!res.ok) throw new Error("导航路径生成失败"); return res.json(); })
         .then(data => {
-            if (!data.trip || !data.trip.legs || data.trip.legs.length === 0) {
-                throw new Error("未解算出合法的拓扑路径");
-            }
-            // 🎯 默认对齐 Valhalla 官方镜像的 6 位压缩精度
-            const coordinates = decodeValhallaShape(data.trip.legs[0].shape);
+            if (!data.trip || !data.trip.legs || data.trip.legs.length === 0) throw new Error("未解算出合法的拓扑路径");
             
-            // 渲染至 WebGL 画布
+            const leg = data.trip.legs[0];
+            const coordinates = decodeValhallaShape(leg.shape);
             renderRouteLine(coordinates);
             
-            console.log(`🟢 算路成功：全程 ${data.trip.summary.length} 公里，预计耗时 ${data.trip.summary.time} 秒`);
+            // 🎯 全量提取路书：总公里数、耗时、转向动作列表
+            updateNavigationPanel(data.trip.summary, leg.maneuvers);
         })
         .catch(err => console.error("❌ 导航总线报错:", err));
 }
 
-// 解压 Valhalla 形状拓扑字符串的核心算法 (标准 6 位精度 Polyline 解码)
+// 渲染多级路书及转弯动作至右侧面板
+function updateNavigationPanel(summary, maneuvers) {
+    const container = document.getElementById('navigation-manifest-box');
+    if (!container) return;
+    
+    let html = `
+        <div style="background:rgba(0,255,204,0.1);padding:8px;border-radius:4px;margin-bottom:10px;border-left:4px solid #00FFCC;">
+            🚗 <b>全长</b>: ${summary.length.toFixed(2)} km | <b>预计耗时</b>: ${(summary.time/60).toFixed(1)} 分钟
+        </div>
+        <div style="max-height: 250px; overflow-y: auto;">
+    `;
+
+    maneuvers.forEach((m, idx) => {
+        html += `
+            <div style="font-size:12px;padding:6px 0;border-bottom:1px solid #2C2C2E;display:flex;align-items:flex-start;">
+                <span style="color:#FF2D55;margin-right:8px;font-weight:bold;">${idx + 1}.</span>
+                <div>
+                    <div>${m.instruction}</div>
+                    <span style="color:#8E8E93;font-size:11px;">🛣️ 行进 ${m.length.toFixed(2)} km (耗时 ${m.time} 秒)</span>
+                </div>
+            </div>
+        `;
+    });
+    html += '</div>';
+    container.innerHTML = html;
+}
+
 function decodeValhallaShape(str) {
     let index = 0, len = str.length;
     let lat = 0, lng = 0;
@@ -281,7 +336,6 @@ function decodeValhallaShape(str) {
     return coordinates;
 }
 
-// 在 WebGL 画布上动态渲染霓虹色电子流导航路径
 function renderRouteLine(coordinates) {
     if (map.getLayer('navigation-line')) map.removeLayer('navigation-line');
     if (map.getSource('navigation-source')) map.removeSource('navigation-source');
@@ -291,20 +345,11 @@ function renderRouteLine(coordinates) {
         'data': { 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': coordinates } }
     });
 
-    // 🎯 鲁棒性加固：动态探测围栏填充层是否存在，严防异步加载时点击引发图层索引白屏死锁
     const beforeLayer = map.getLayer('fences-layer-fill') ? 'fences-layer-fill' : undefined;
-
     map.addLayer({
-        'id': 'navigation-line',
-        'type': 'line',
-        'source': 'navigation-source',
+        'id': 'navigation-line', 'type': 'line', 'source': 'navigation-source',
         'layout': { 'line-join': 'round', 'line-cap': 'round' },
-        // 🎯 赛博霓虹粉
-        'paint': {
-            'line-color': '#FF2D55', 
-            'line-width': 6,
-            'line-opacity': 0.9
-        }
+        'paint': { 'line-color': '#FF2D55', 'line-width': 6, 'line-opacity': 0.9 }
     }, beforeLayer); 
 }
 
@@ -313,4 +358,7 @@ function clearRouting() {
     routeMarkers.forEach(m => m.remove());
     routeMarkers = [];
     if (map.getLayer('navigation-line')) map.removeLayer('navigation-line');
+    document.getElementById('start-coord-input').value = '';
+    document.getElementById('end-coord-input').value = '';
+    document.getElementById('navigation-manifest-box').innerHTML = '<span style="color:#8E8E93;">等待地图两点交互算路...</span>';
 }

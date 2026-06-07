@@ -7,32 +7,74 @@
     <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
     <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
     <style>
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #0b1522; font-family: "Helvetica Neue", Arial, sans-serif; }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #0b1522; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
         #map { width: 100%; height: 100%; position: absolute; top: 0; left: 0; }
-        .control-panel { position: absolute; top: 20px; left: 20px; z-index: 10; background: rgba(11, 21, 34, 0.85); border: 1px solid #1e3a5f; padding: 15px; border-radius: 6px; color: #fff; width: 280px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); backdrop-filter: blur(5px); }
-        h3 { margin: 0 0 10px 0; font-size: 16px; color: #00d2ff; letter-spacing: 1px; border-bottom: 1px solid #1e3a5f; padding-bottom: 5px; }
-        .device-select { width: 100%; background: #112233; border: 1px solid #224466; color: #fff; padding: 8px; border-radius: 4px; outline: none; cursor: pointer; }
-        .alarm-container { position: absolute; top: 20px; right: 20px; z-index: 10; background: rgba(11, 21, 34, 0.85); border: 1px solid #ff3b30; padding: 15px; border-radius: 6px; color: #fff; width: 320px; max-height: 400px; overflow-y: auto; box-shadow: 0 4px 20px rgba(255,0,0,0.15); backdrop-filter: blur(5px); }
-        .alarm-item { background: rgba(255, 59, 48, 0.1); border-left: 4px solid #ff3b30; padding: 8px 12px; margin-bottom: 8px; border-radius: 0 4px 4px 0; font-size: 13px; animation: fadeIn 0.3s ease-out; }
-        .alarm-time { color: #8e8e93; float: right; font-size: 11px; margin-top: 2px; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+        
+        /* 左侧自适应控制面板 */
+        .left-panel { position: absolute; top: 20px; left: 20px; z-index: 10; background: rgba(11, 21, 34, 0.85); border: 1px solid #1e3a5f; padding: 15px; border-radius: 8px; color: #fff; width: 280px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); backdrop-filter: blur(5px); }
+        
+        /* 右侧赛博立体控制面板 */
+        .right-control-panel { position: absolute; right: 20px; top: 20px; width: 340px; max-height: calc(100% - 40px); background: rgba(11, 21, 34, 0.9); border: 1px solid #1e3a5f; border-radius: 12px; padding: 15px; color: #FFF; z-index: 10; box-shadow: 0 12px 30px rgba(0,0,0,0.5); backdrop-filter: blur(5px); display: flex; flex-direction: column; gap: 15px; overflow-y: auto; }
+        
+        /* 模块公共标题 */
+        .panel-title { margin: 0 0 8px 0; font-size: 14px; font-weight: bold; letter-spacing: 0.5px; border-bottom: 1px solid #1e3a5f; padding-bottom: 5px; }
+        
+        /* 输入框与下拉选择器基础样式 */
+        .device-select { width: 100%; background: #112233; border: 1px solid #224466; color: #fff; padding: 8px; border-radius: 4px; outline: none; cursor: pointer; font-size: 13px; }
+        .coord-input { background: #112233; border: 1px solid #224466; padding: 6px; font-size: 12px; border-radius: 4px; outline: none; width: calc(100% - 14px); font-family: monospace; }
+        
+        /* 跳转终端按钮样式 */
+        .nav-btn { display: block; width: 100%; text-align: center; margin-top: 12px; color: #8e8e93; text-decoration: none; font-size: 12px; border: 1px solid #224466; background: rgba(17, 34, 51, 0.5); padding: 6px 0; border-radius: 4px; transition: all 0.3s ease; }
+        .nav-btn:hover { color: #00d2ff; border-color: #00d2ff; background: rgba(0, 210, 255, 0.1); }
+
+        /* 数据显示容器基础样式 */
+        .data-box { background: #070d14; padding: 8px; border-radius: 6px; min-height: 80px; border: 1px solid #162942; }
+        
+        /* 滚动条美化 */
+        ::-webkit-scrollbar { width: 5px; }
+        ::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); }
+        ::-webkit-scrollbar-thumb { background: #1e3a5f; border-radius: 10px; }
     </style>
 </head>
 <body>
 
     <div id="map"></div>
 
-    <div class="control-panel">
-        <h3>🛰️ 活跃采集终端发现</h3>
+    <div class="left-panel">
+        <h3 style="margin: 0 0 10px 0; font-size: 16px; color: #00d2ff; letter-spacing: 1px; border-bottom: 1px solid #1e3a5f; padding-bottom: 5px;">🛰️ 活跃采集终端发现</h3>
         <select id="deviceList" class="device-select" onchange="switchDeviceHistory(this.value)">
             <option value="">-- 选择设备查看历史轨迹 --</option>
         </select>
+        
+        <a href="mobile.html" class="nav-btn">📱 进入手机端实时采集中心 →</a>
     </div>
 
-    <div class="alarm-container">
-        <h3 style="color: #ff3b30; border-bottom: 1px solid #551a1a;">🚨 空间越界碰撞实时存证</h3>
-        <div id="alarmLog"></div>
+    <div class="right-control-panel">
+        
+        <div>
+            <div class="panel-title" style="color: #00FFCC;">📍 空间坐标提取栅格</div>
+            <div style="display: flex; flex-direction: column; gap: 6px;">
+                <input id="start-coord-input" class="coord-input" type="text" placeholder="起点: 点击地图自动拾取" readonly style="color: #00FFCC;" />
+                <input id="end-coord-input" class="coord-input" type="text" placeholder="终点: 点击地图自动拾取" readonly style="color: #FF3B30;" />
+            </div>
+        </div>
+
+        <div>
+            <div class="panel-title" style="color: #FFD60A;">📡 轨迹数据采集网格</div>
+            <div id="collected-tracks-box" class="data-box" style="max-height: 120px; overflow-y: auto;">
+                <span style="color: #8E8E93; font-size: 12px;">暂无设备联动信号...</span>
+            </div>
+        </div>
+
+        <div>
+            <div class="panel-title" style="color: #FF2D55;">🧭 Valhalla 高级算路路书</div>
+            <div id="navigation-manifest-box" class="data-box" style="min-height: 180px;">
+                <span style="color: #8E8E93; font-size: 12px;">等待地图两点交互算路...</span>
+            </div>
+        </div>
     </div>
+
+    <div id="alarmLog" style="display: none;"></div>
 
     <script src="js/app.js?v=20260607_final"></script>
 </body>
