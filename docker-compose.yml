@@ -8,23 +8,16 @@ services:
     build: .
     container_name: geo-go-app-1
     restart: always
-    ports:
-      - "443:443"
-      - "8080:8080"
-    networks:
-      geo-static-net:
-        ipv4_address: 192.168.10.10  # 🎯 固定 Go 容器内网 IP
+    # 🎯 核心改变：直接共享宿主机网络，全面卸载自定义虚拟网卡
+    network_mode: host  
     environment:
-      - DB_URL=postgres://docker:floder123@host.docker.internal:5432/gis_db?sslmode=disable
-      - REDIS_URL=192.168.10.20:6379  # 🎯 使用静态 IP 连接隔壁 Redis
-    depends_on:
-      - redis
-      - valhalla-service
+      # 💡 由于处于同一主机网络，DB_URL 穿透不再需要 host.docker.internal 别名
+      - DB_URL=postgres://docker:floder123@127.0.0.1:5432/gis_db?sslmode=disable
+      # 💡 访问隔壁的 Redis 直接走本地环回网卡
+      - REDIS_URL=127.0.0.1:6379
     volumes:
-      - /ssl:/ssl:ro                 # 🔓 物理挂载宿主机真证书，防止 open /ssl/cert.pem 猝死
-      - ./static:/app/static         # 挂载前端静态大屏资源
-    extra_hosts:
-      - "host.docker.internal:host-gateway" # 允许 Linux 容器直接穿透访问宿主机上的 PostGIS
+      - /ssl:/ssl:ro                 
+      - ./static:/app/static         
 
   # -------------------------------------------------------------
   # 💾 Redis 高速缓存服务
@@ -33,9 +26,8 @@ services:
     image: redis:7-alpine
     container_name: geo-go-redis-1
     restart: always
-    networks:
-      geo-static-net:
-        ipv4_address: 192.168.10.20  # 🎯 固定 Redis 容器内网 IP
+    # 🎯 核心改变：共享主机网络，自动在宿主机本地激活 6379 端口
+    network_mode: host  
 
   # -------------------------------------------------------------
   # 🧭 Valhalla 拓扑导航引擎
@@ -44,22 +36,8 @@ services:
     image: ghcr.io/valhalla/valhalla:latest
     container_name: valhalla-service
     restart: always
-    ports:
-      - "8002:8002"
-    networks:
-      geo-static-net:
-        ipv4_address: 192.168.10.30  # 🎯 关键：固定 Valhalla 容器内网 IP
+    # 🎯 核心改变：共享主机网络，自动在宿主机本地激活 8002 端口
+    network_mode: host  
     volumes:
-      # 迎合官方镜像默认的加载路径，它启动时会自动去 /custom_files 里找配置和路网
       - /root/valhalla-server/valhalla.json:/custom_files/valhalla.json:ro
       - /root/valhalla-server/custom_tiles:/custom_files/valhalla_tiles
-
-# -------------------------------------------------------------
-# 🌐 工业级底层规则：构建 192.168.10.0/24 静态专属业务内网
-# -------------------------------------------------------------
-networks:
-  geo-static-net:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 192.168.10.0/24

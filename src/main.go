@@ -376,7 +376,7 @@ func main() {
 	http.HandleFunc("/ws", WsHandler)
 
 	// 🧭 隧道：将前端加密的 /route 请求透明穿透给 192.168.10.30 容器
-	valhallaURL, _ := url.Parse("http://192.168.10.30:8002")
+	valhallaURL, _ := url.Parse("http://127.0.0.1:8002")
 	valhallaProxy := httputil.NewSingleHostReverseProxy(valhallaURL)
 
 	http.HandleFunc("/route", func(w http.ResponseWriter, r *http.Request) {
