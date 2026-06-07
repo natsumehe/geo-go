@@ -378,7 +378,8 @@ func main() {
 	// ==========================================
 	// 🧭 隧道：将 HTTPS /route 请求卸载给本机 Valhalla 容器
 	// ==========================================
-	valhallaURL, _ := url.Parse("http://127.0.0.1:8002")
+
+	valhallaURL, _ := url.Parse("http://valhalla-service:8002")
 	valhallaProxy := httputil.NewSingleHostReverseProxy(valhallaURL)
 
 	http.HandleFunc("/route", func(w http.ResponseWriter, r *http.Request) {
