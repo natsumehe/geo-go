@@ -446,11 +446,10 @@ func main() {
 
 			mvtQuery := fmt.Sprintf(`
                 WITH tilegeom AS (
-                    -- 💡 关键改动：SELECT 中必须保留 name 和 highway 字段
-                    -- 这样 ST_AsMVT 才会把属性打包进矢量瓦片，前端才能通过 ['get', 'highway'] 上色和通过 {name} 显示文字
+                    -- 🎯 修正拼写笔误：将之前的 way_3837 改回绝对正确的物理列名 way_3857
                     SELECT osm_id, name, highway,
                            ST_AsMVTGeom(
-                               ST_SimplifyPreserveTopology(way_3837, %f), 
+                               ST_SimplifyPreserveTopology(way_3857, %f), 
                                ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857), 
                                4096, 64, true
                            ) AS geom
