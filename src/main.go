@@ -8,6 +8,8 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -372,6 +374,33 @@ func main() {
 	http.HandleFunc("/list", ListHandle)
 	http.HandleFunc("/fences", FencesHandle)
 	http.HandleFunc("/ws", WsHandler)
+
+	// ==========================================
+	// 🧭 隧道：将 HTTPS /route 请求卸载给本机 Valhalla 容器
+	// ==========================================
+	valhallaURL, _ := url.Parse("http://127.0.0.1:8002")
+	valhallaProxy := httputil.NewSingleHostReverseProxy(valhallaURL)
+
+	http.HandleFunc("/route", func(w http.ResponseWriter, r *http.Request) {
+		// 1. 注入全量安全跨域头
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// 2. 修正 Request 头部，防范 Valhalla 内部路由识别落空
+		r.URL.Host = valhallaURL.Host
+		r.URL.Scheme = valhallaURL.Scheme
+		r.Header.Set("X-Forwarded-Host", r.Header.Get("Host"))
+		r.Host = valhallaURL.Host
+
+		// 3. 物理穿透：直接交由内部网络管道递交给 Valhalla 容器
+		valhallaProxy.ServeHTTP(w, r)
+	})
 
 	// ==========================================
 	// ⚡ PostGIS MVT 多图层矢量裁剪服务
