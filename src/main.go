@@ -430,18 +430,18 @@ func main() {
 			dbErr = db.QueryRow(mvtQuery, z, x, y).Scan(&localTileData)
 
 		case "roads":
-			// 🎯 【清除内耗】：删除了内部重复的 yStr/y 声明，直接沿用外层解析完毕的 z, x, y。并强制添加 ::int 约束
+			// 🎯 终极方案：使用 ST_Transform(way, 3857) 确保底表几何图形彻底转化为 3857 坐标，与瓦片边界完美对齐
 			mvtQuery := `
                 WITH tilegeom AS (
                     SELECT osm_id, name,
                            ST_AsMVTGeom(
-                               way, 
+                               ST_Transform(way, 3857), 
                                ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857), 
                                4096, 64, true
                            ) AS geom
                     FROM planet_osm_line
                     WHERE osm_id IN (121875940, 121875938, 121875909, 121875919, 121875958, 121875959)
-                      AND way && ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857)
+                      AND ST_Transform(way, 3857) && ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857)
                 )
                 SELECT COALESCE(ST_AsMVT(tilegeom.*, 'roads'), ''::bytea)::bytea FROM tilegeom;`
 
