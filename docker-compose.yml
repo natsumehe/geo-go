@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  # =========================================================================
+  # 🧭 Valhalla 高性能导航拓扑引擎
+  # =========================================================================
+  valhalla-service:
+    image: ghcr.io/valhalla/valhalla:latest
+    container_name: valhalla-service
+    restart: always
+    # 🎯 核心：直接共享宿主机网络，确保阿里云环境下的 8002 端口无损暴露
+    network_mode: host
+    volumes:
+      # 1. 将标准的配置文件挂载到容器内的 /custom_tiles 根目录下
+      - /root/valhalla-server/valhalla.json:/custom_tiles/valhalla.json:ro
+      # 2. 映射包含物理 tiles.tar 和 0,1,2 碎文件的拓扑数据目录
+      - /root/valhalla-server/custom_tiles:/custom_tiles
+    # 🎯 核心：启动命令必须精准咬合容器内的 /custom_tiles/valhalla.json
+    command: ["valhalla_service", "/custom_tiles/valhalla.json", "1"]
+
+  # =========================================================================
+  # 🚀 Go 业务网关后端层
+  # =========================================================================
+  geo-go-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: geo-go-app-1 
+    restart: always
+    ports:
+      - "8080:8080" 
+      - "443:443"
+    volumes:
+      - /ssl:/ssl:ro  # :ro 表示容器内只读，保护证书安全
+      - ./static:/app/static:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - ENV=production
+      - REDIS_ADDR=geo-go-redis-1:6379
+      - VALHALLA_URL=http://host.docker.internal:8002
+    depends_on:
+      - geo-go-redis-1
+      - valhalla-service
+
+  # =========================================================================
+  # 💾 Redis 高速缓存/实时报警状态队列
+  # =========================================================================
+  geo-go-redis-1:
+    image: redis:7-alpine
+    container_name: geo-go-redis-1
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+
+volumes:
+  redis-data:

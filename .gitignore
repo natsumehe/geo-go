@@ -1,0 +1,16 @@
+# 编译与临时文件
+build/
+*.log
+*.hex
+*.csv
+
+# 二进制产物
+geo-server
+server
+
+# 前端依赖与产物
+web/node_modules/
+web/dist/
+
+# 简历与私有文件
+resume.*
