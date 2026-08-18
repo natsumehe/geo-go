@@ -32,10 +32,11 @@ services:
       - "443:443"
     volumes:
       - /ssl:/ssl:ro  # :ro 表示容器内只读，保护证书安全
-      - ./static:/app/static:ro
+        #- ./static:/app/static:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
+      - DB_URL=postgres://docker:floder123@host.docker.internal:5432/gis_db?sslmode=disable
       - ENV=production
       - REDIS_ADDR=geo-go-redis-1:6379
       - VALHALLA_URL=http://host.docker.internal:8002

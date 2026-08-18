@@ -50,3 +50,14 @@ ON planet_osm_line USING gist(way_3857, highway);
 
 -- 3. 重新统计信息
 VACUUM ANALYZE planet_osm_line;
+
+-- 1. 添加几何列
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS geom geometry(Point, 3857);
+
+-- 2. 触发或批量更新现有数据（将 4326 转为 3857 存储）
+UPDATE devices
+SET geom = ST_Transform(ST_SetSRID(ST_MakePoint(last_lng, last_lat), 4326), 3857)
+WHERE last_lng IS NOT NULL AND last_lat IS NOT NULL;
+
+-- 3. 创建空间索引（极大地降低 MVT 查询时的 CPU 消耗）
+CREATE INDEX IF NOT EXISTS idx_devices_geom ON devices USING GIST (geom);

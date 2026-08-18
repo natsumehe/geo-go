@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import { useState, useRef } from "react";
 import * as maplibregl from 'maplibre-gl';
 import { MapContainer } from './components/MapContainer';
 import { LeftDevicePanel } from './components/LeftDevicePanel';

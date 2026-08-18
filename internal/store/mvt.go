@@ -11,19 +11,40 @@ func GetTileData(db *sql.DB, layerName string, z, x, y int) ([]byte, error) {
 	var dbErr error
 
 	switch layerName {
+	case "devices":
+		// 🎯 动态利用 last_lng / last_lat 投影转换为 3857 并支持 MVT 裁剪
+		mvtQuery := `
+            WITH tilegeom AS (
+                SELECT device_id, last_seen,
+                       ST_AsMVTGeom(
+                           ST_Transform(ST_SetSRID(ST_MakePoint(last_lng, last_lat), 4326), 3857), 
+                           ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857), 
+                           4096, 64, true
+                       ) AS geom
+                FROM devices
+                WHERE last_lng IS NOT NULL AND last_lat IS NOT NULL
+                  AND ST_Transform(ST_SetSRID(ST_MakePoint(last_lng, last_lat), 4326), 3857) && ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857)
+            )
+            SELECT COALESCE(ST_AsMVT(tilegeom.*, 'devices'), ''::bytea)::bytea FROM tilegeom;`
+
+		dbErr = db.QueryRow(mvtQuery, z, x, y).Scan(&localTileData)
+		if dbErr != nil {
+			log.Printf("[🔎 PostGIS devices 图层查询报错]: %v", dbErr)
+		}
+
 	case "fences":
 		mvtQuery := `
-			WITH tilegeom AS (
-				SELECT id, name, 
-					   ST_AsMVTGeom(
-						   ST_Transform(area, 3857), 
-						   ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857), 
-						   4096, 64, true
-					   ) AS geom
-				FROM fences
-				WHERE ST_Transform(area, 3857) && ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857)
-			)
-			SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
+            WITH tilegeom AS (
+                SELECT id, name, 
+                       ST_AsMVTGeom(
+                           ST_Transform(area, 3857), 
+                           ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857), 
+                           4096, 64, true
+                       ) AS geom
+                FROM fences
+                WHERE ST_Transform(area, 3857) && ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857)
+            )
+            SELECT ST_AsMVT(tilegeom.*, 'fences') FROM tilegeom;`
 		dbErr = db.QueryRow(mvtQuery, z, x, y).Scan(&localTileData)
 
 	case "roads":
@@ -42,18 +63,18 @@ func GetTileData(db *sql.DB, layerName string, z, x, y int) ([]byte, error) {
 		}
 
 		mvtQuery := fmt.Sprintf(`
-			WITH tilegeom AS (
-				SELECT osm_id, name, highway,
-					   ST_AsMVTGeom(
-						   ST_SimplifyPreserveTopology(way_3857, %f), 
-						   ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857), 
-						   4096, 64, true
-					   ) AS geom
-				FROM planet_osm_line
-				WHERE %s
-				  AND way_3857 && ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857)
-			)
-			SELECT COALESCE(ST_AsMVT(tilegeom.*, 'roads'), ''::bytea)::bytea FROM tilegeom;`, tolerance, highwayFilter)
+            WITH tilegeom AS (
+                SELECT osm_id, name, highway,
+                       ST_AsMVTGeom(
+                           ST_SimplifyPreserveTopology(way_3857, %f), 
+                           ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857), 
+                           4096, 64, true
+                       ) AS geom
+                FROM planet_osm_line
+                WHERE %s
+                  AND way_3857 && ST_SetSRID(ST_TileEnvelope($1::int, $2::int, $3::int), 3857)
+            )
+            SELECT COALESCE(ST_AsMVT(tilegeom.*, 'roads'), ''::bytea)::bytea FROM tilegeom;`, tolerance, highwayFilter)
 
 		dbErr = db.QueryRow(mvtQuery, z, x, y).Scan(&localTileData)
 		if dbErr != nil {
