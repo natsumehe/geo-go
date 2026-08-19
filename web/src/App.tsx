@@ -6,11 +6,10 @@ import { RightControlPanel } from './components/RightControlPanel';
 import { MobileCollector } from './components/MobileCollector';
 import { useGeoCollector } from './hooks/useGeoCollector';
 import { useValhallaRouting } from './hooks/useValhallaRouting';
-import { GodotContainer } from './components/GodotContainer';
 import './App.css';
 
 export function App() {
-  const [viewMode, setViewMode] = useState<'dashboard' | 'collector' | 'game'>('dashboard');
+  const [viewMode, setViewMode] = useState<'dashboard' | 'collector'>('dashboard');
   const mapRef = useRef<maplibregl.Map | null>(null);
 
   const [deviceList, setDeviceList] = useState<string[]>([]);
@@ -29,6 +28,10 @@ export function App() {
       if (geoJSON.coordinates && geoJSON.coordinates.length > 0) {
         const formatted = geoJSON.coordinates.map((c: number[]) => ({ lng: c[0], lat: c[1] }));
         setCollectedTracks(formatted);
+        
+        if ((mapRef.current as any).renderTrackLine) {
+          (mapRef.current as any).renderTrackLine(formatted);
+        }
       }
     } catch (err) {
       console.error(err);
@@ -37,14 +40,13 @@ export function App() {
 
   return (
     <div style={{ width: '100vw', height: '100dvh', overflow: 'hidden', position: 'relative' }}>
-      {/* 📊 大屏端地图视图 */}
+      {/* 📊 大屏端 (用 display 控制显隐，保证切回来时底图不销毁不闪烁) */}
       <div style={{ width: '100%', height: '100%', display: viewMode === 'dashboard' ? 'block' : 'none', position: 'relative' }}>
         <MapContainer 
           onMapClick={handleMapClick} 
           mapRef={mapRef} 
           setDeviceList={setDeviceList}
           collectedTracks={collectedTracks} 
-          onOpenGame={() => setViewMode('game')}
         />
         <LeftDevicePanel
           deviceList={deviceList}
@@ -61,7 +63,7 @@ export function App() {
         />
       </div>
 
-      {/* 📱 移动端采集端视图 */}
+      {/* 📱 移动端采集端 */}
       <div style={{ width: '100%', height: '100%', display: viewMode === 'collector' ? 'block' : 'none' }}>
         <MobileCollector
           deviceId={deviceId}
@@ -72,34 +74,6 @@ export function App() {
           logs={logs}
           onSwitchToDashboard={() => setViewMode('dashboard')}
         />
-      </div>
-
-      {/* 🎮 Godot 游戏沙盒全屏视图（带返回地图悬浮按钮） */}
-      <div style={{ width: '100%', height: '100%', display: viewMode === 'game' ? 'block' : 'none', position: 'relative' }}>
-        <button 
-          onClick={() => setViewMode('dashboard')}
-          style={{
-            position: 'absolute',
-            top: '20px',
-            left: '20px',
-            zIndex: 1000,
-            padding: '10px 18px',
-            backgroundColor: '#00FFCC',
-            color: '#000',
-            border: 'none',
-            borderRadius: '8px',
-            cursor: 'pointer',
-            fontWeight: 'bold',
-            fontSize: '14px',
-            boxShadow: '0 4px 15px rgba(0,255,204,0.4)',
-            transition: 'background 0.2s',
-          }}
-          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#00ccb4'}
-          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#00FFCC'}
-        >
-          ⬅ 返回地图
-        </button>
-        <GodotContainer />
       </div>
     </div>
   );

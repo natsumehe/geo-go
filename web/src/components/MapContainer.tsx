@@ -10,6 +10,10 @@ import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 // ============================================================
 maplibregl.setWorkerUrl(workerUrl);
 
+console.log('========================================');
+console.log('MapLibre Worker URL:', workerUrl);
+console.log('========================================');
+
 const SHANGHAI_BOUNDS: [[number, number], [number, number]] = [
   [120.85, 30.65],
   [122.15, 31.95],
@@ -23,7 +27,6 @@ interface MapContainerProps {
     lng: number;
     lat: number;
   }>;
-  onOpenGame: () => void; // 用于触发跳转到游戏界面
 }
 
 export const MapContainer: React.FC<MapContainerProps> = ({
@@ -31,7 +34,6 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   mapRef,
   setDeviceList,
   collectedTracks,
-  onOpenGame,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -41,6 +43,10 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       console.error('❌ mapContainerRef.current 不存在');
       return;
     }
+
+    console.log('========================================');
+    console.log('🗺️ 开始创建 MapLibre Map');
+    console.log('========================================');
 
     // ========================================================
     // 创建 Map
@@ -54,25 +60,91 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
     });
 
+    // ========================================================
+    // 保存 Map
+    // ========================================================
     mapRef.current = map;
     (window as any).__MAPLIBRE_MAP__ = map;
+
+    console.log('✅ new Map');
+    console.log('Map instance:', map);
+    console.log('Map container:', mapContainerRef.current);
+    console.log('Initial center:', map.getCenter());
+    console.log('Initial zoom:', map.getZoom());
+    console.log('DevicePixelRatio:', window.devicePixelRatio);
 
     // ========================================================
     // MapLibre ERROR
     // ========================================================
     map.on('error', (event) => {
       console.error('❌❌❌ MapLibre ERROR:', event);
+      if (event?.error) {
+        const errObj = event.error as any;
+        console.error('Error object:', errObj);
+        console.error('Error message:', errObj.message);
+        console.error('Error stack:', errObj.stack || 'No stack available');
+      }
+    });
+
+    // ========================================================
+    // style loading / data / sources
+    // ========================================================
+    map.on('styledataloading', () => {
+      console.log('🎨 styledataloading');
+    });
+
+    map.on('styledata', () => {
+      console.log('🎨 styledata event');
+      try {
+        const style = map.getStyle();
+        console.log('Style name:', style?.name);
+        console.log('Style sources:', Object.keys(style?.sources || {}));
+        console.log('Style layers:', style?.layers?.map((layer) => layer.id));
+      } catch (error: unknown) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        console.error('读取 style 失败:', err.message);
+      }
+    });
+
+    map.on('sourcedataloading', (event) => {
+      console.log('📥 sourcedataloading:', event.sourceId, event.sourceDataType);
+    });
+
+    map.on('sourcedata', (event) => {
+      console.log(
+        '📦 sourcedata:',
+        event.sourceId,
+        event.sourceDataType,
+        'isSourceLoaded:',
+        event.isSourceLoaded
+      );
+    });
+
+    map.on('webglcontextlost', () => {
+      console.error('❌ WebGL context lost');
+    });
+
+    map.on('webglcontextrestored', () => {
+      console.log('✅ WebGL context restored');
     });
 
     // ========================================================
     // 自定义 source / layer 初始化函数
     // ========================================================
     const initializeCustomLayers = () => {
-      if (!map.isStyleLoaded()) return;
+      console.log('========================================');
+      console.log('🚀 初始化自定义地图图层');
+      console.log('========================================');
+
+      if (!map.isStyleLoaded()) {
+        console.warn('⚠️ style 尚未 ready');
+        return;
+      }
 
       // 1. roads source & layer
       if (!map.getSource('roads-mvt-source')) {
         const roadsUrl = `${window.location.origin}/tiles/roads/{z}/{x}/{y}.mvt`;
+        console.log('🔥 addSource roads:', roadsUrl);
         map.addSource('roads-mvt-source', {
           type: 'vector',
           tiles: [roadsUrl],
@@ -84,6 +156,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       // 2. fences source & layer
       if (!map.getSource('fences-mvt-source')) {
         const fencesUrl = `${window.location.origin}/tiles/fences/{z}/{x}/{y}.mvt`;
+        console.log('🔥 addSource fences:', fencesUrl);
         map.addSource('fences-mvt-source', {
           type: 'vector',
           tiles: [fencesUrl],
@@ -95,6 +168,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       // 3. devices source & layer
       if (!map.getSource('devices-mvt-source')) {
         const devicesUrl = `${window.location.origin}/tiles/devices/{z}/{x}/{y}.mvt`;
+        console.log('🔥 addSource devices:', devicesUrl);
         map.addSource('devices-mvt-source', {
           type: 'vector',
           tiles: [devicesUrl],
@@ -163,47 +237,25 @@ export const MapContainer: React.FC<MapContainerProps> = ({
           },
         });
       }
+
+      console.log('✅ 自定义图层初始化完成');
     };
 
     // ========================================================
     // MAP LOAD
     // ========================================================
     map.once('load', () => {
+      console.log('🔥🔥🔥 MAP LOAD FIRED');
+      console.log('loaded:', map.loaded());
+      console.log('styleLoaded:', map.isStyleLoaded());
+      console.log('tilesLoaded:', map.areTilesLoaded());
+
       initializeCustomLayers();
+    });
 
-      // ========================================================
-      // 📍 在地图上创建带图片的自定义游戏入口标签
-      // ========================================================
-      const el = document.createElement('div');
-      el.className = 'game-map-marker';
-      el.style.cssText = `
-        cursor: pointer;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        background: rgba(20, 20, 20, 0.85);
-        padding: 8px 12px;
-        border-radius: 10px;
-        border: 1px solid #00FFCC;
-        box-shadow: 0 4px 15px rgba(0,255,204,0.4);
-        transition: transform 0.2s ease;
-      `;
-      
-      // 内部放入图片与文字
-      el.innerHTML = `
-        <img src="/image-1.svg" alt="Game Entry" style="width: 36px; height: 36px; margin-bottom: 4px; object-fit: contain;" />
-        <span style="color: #00FFCC; font-size: 12px; font-weight: bold; white-space: nowrap;">进入游戏WASD控制</span>
-      `;
-      
-      // 点击标签触发切换到游戏界面
-      el.addEventListener('click', () => {
-        onOpenGame();
-      });
-
-      // 在地图指定坐标（例如上海市中心附近）添加 Marker
-      new maplibregl.Marker({ element: el })
-        .setLngLat([121.4737, 31.2304])
-        .addTo(map);
+    map.on('idle', () => {
+      // 避免控制台刷屏，这里保留状态，如有需要可取消注释
+      // console.log('💤 MAP IDLE');
     });
 
     map.on('click', onMapClick);
@@ -230,6 +282,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     // cleanup
     // ========================================================
     return () => {
+      console.log('🧹 MapContainer cleanup');
       clearInterval(intervalId);
       map.off('click', onMapClick);
 
