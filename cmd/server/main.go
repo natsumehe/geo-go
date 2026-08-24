@@ -6,10 +6,11 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"time"
 	"strings"
+	"time"
 
 	"crypto/tls"
+
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 
@@ -19,6 +20,9 @@ import (
 )
 
 func main() {
+
+	mux := http.NewServeMux()
+
 	connStr := os.Getenv("DB_URL")
 	if connStr == "" {
 		connStr = "postgres://docker:floder123@localhost:5432/gis_db?sslmode=disable"
@@ -71,19 +75,20 @@ func main() {
 		}
 	}()
 
-	// 统一 API 路由注册
-	http.HandleFunc("/list", appHandler.List)
-	http.HandleFunc("/update", appHandler.Update)
-	http.HandleFunc("/history", appHandler.History)
-	http.HandleFunc("/fences", appHandler.Fences)
-	http.HandleFunc("/alarms", appHandler.Alarms)
-	http.HandleFunc("/tiles/", appHandler.Tile)
-	http.HandleFunc("/route", appHandler.RouteProxy)
-	http.HandleFunc("/ws", appHandler.WebSocket)
-	http.HandleFunc("/ws/upload", appHandler.WebSocket)
+	// 统一 API 路由注册（全部改用 mux.HandleFunc）
+	mux.HandleFunc("/list", appHandler.List)
+	mux.HandleFunc("/update", appHandler.Update)
+	mux.HandleFunc("/history", appHandler.History)
+	mux.HandleFunc("/fences", appHandler.Fences)
+	mux.HandleFunc("/alarms", appHandler.Alarms)
+	mux.HandleFunc("/tiles/", appHandler.Tile)
+	mux.HandleFunc("/route", appHandler.RouteProxy)
+	mux.HandleFunc("/ws", appHandler.WebSocket)
+	mux.HandleFunc("/ws/upload", appHandler.WebSocket)
+	mux.HandleFunc("/api/chat", handler.HandleQwenChat)
 
 	// =========================================================================
-	// 🛡️ 静态文件与 React SPA 路由托管（健壮性修复版）
+	// 🛡️ 静态文件与 React SPA 路由托管
 	// =========================================================================
 	staticDir := "/app/static"
 	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
@@ -92,10 +97,9 @@ func main() {
 
 	fs := http.FileServer(http.Dir(staticDir))
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// 检查本地磁盘是否存在对应的物理文件（无论是文件还是目录，只要存在就直接交由 FileServer 处理）
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		targetPath := staticDir + r.URL.Path
-		
+
 		if strings.HasSuffix(r.URL.Path, ".mjs") {
 			w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 		}
@@ -109,26 +113,26 @@ func main() {
 			}
 		}
 
-		// 找不到物理文件时（说明是 React Router 的前端虚拟路由），统一回退返回 index.html
 		r.URL.Path = "/"
 		fs.ServeHTTP(w, r)
 	})
 
 	// =========================================================================
-	// 启动 HTTP/HTTPS 双网关服务
+	// 启动 HTTP/HTTPS 双网关服务（注意传入 mux）
 	// =========================================================================
-	
+
 	// 1. 在 goroutine 中启动 HTTP 基础监听
 	go func() {
 		fmt.Println("🔓 HTTP 监控主服务已建立: 8080")
-		if err := http.ListenAndServe(":8080", nil); err != nil {
+		if err := http.ListenAndServe(":8080", mux); err != nil { // 传入 mux替代 nil
 			log.Printf("HTTP 服务异常: %v", err)
 		}
 	}()
 
 	// 2. 配置 HTTPS Server
 	srv := &http.Server{
-		Addr: ":443",
+		Addr:    ":443",
+		Handler: mux, // 同样在这里指定 mux
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		},

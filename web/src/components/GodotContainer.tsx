@@ -4,6 +4,7 @@ import './GodotContainer.css';
 declare global {
   interface Window {
     Engine: any;
+    API_BASE_URL: string; // 声明全局变量，供 Godot 的 JavaScriptBridge 读取
   }
 }
 
@@ -14,6 +15,11 @@ export const GodotContainer: React.FC = () => {
   const noticeRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    // 1. 动态注入后端 API 基础路径
+    // 生产/同域部署时：window.location.origin (例如 https://your-domain.com)
+    // 本地开发时如果前后端分离，也可以写死为 "http://localhost:8080"
+    window.API_BASE_URL = window.location.origin;
+
     const scriptId = 'godot-engine-js';
 
     const loadGodotScript = () => {
@@ -48,7 +54,7 @@ export const GodotContainer: React.FC = () => {
         godotPoolSize: 4,
       };
 
-      const GODOT_THREADS_ENABLED = false; // 已调整为单线程
+      const GODOT_THREADS_ENABLED = false;
       const engine = new window.Engine(GODOT_CONFIG);
 
       const statusOverlay = statusRef.current;
