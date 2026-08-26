@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"geo/internal/config"
 )
 
 type ChatRequest struct {
@@ -20,11 +22,42 @@ type ChatResponse struct {
 	Reply string `json:"reply"`
 }
 
-func HandleQwenChat(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+type QwenResponse struct {
+	Choices []QwenChoice `json:"choices"`
+}
+
+type QwenChoice struct {
+	Message QwenMessage `json:"message"`
+}
+
+type QwenMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+func HandleQwenChat(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	w.Header().Set(
+		"Access-Control-Allow-Origin",
+		"*",
+	)
+
+	w.Header().Set(
+		"Access-Control-Allow-Headers",
+		"Content-Type, Authorization",
+	)
+
+	w.Header().Set(
+		"Access-Control-Allow-Methods",
+		"POST, OPTIONS",
+	)
+
+	w.Header().Set(
+		"Content-Type",
+		"application/json; charset=utf-8",
+	)
 
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
@@ -53,8 +86,11 @@ func HandleQwenChat(w http.ResponseWriter, r *http.Request) {
 			http.StatusBadRequest,
 			"invalid request body",
 		)
+
 		return
 	}
+
+	req.Message = trimString(req.Message)
 
 	if req.Message == "" {
 		writeJSONError(
@@ -62,6 +98,7 @@ func HandleQwenChat(w http.ResponseWriter, r *http.Request) {
 			http.StatusBadRequest,
 			"message is empty",
 		)
+
 		return
 	}
 
@@ -69,7 +106,42 @@ func HandleQwenChat(w http.ResponseWriter, r *http.Request) {
 		req.CharacterID = "guide"
 	}
 
-	apiKey := os.Getenv("DASHSCOPE_API_KEY")
+	log.Printf(
+		"📨 收到 NPC 请求 character_id=%s message=%q",
+		req.CharacterID,
+		req.Message,
+	)
+
+	aiConfig, err := config.LoadAIConfig(
+		req.CharacterID,
+	)
+
+	if err != nil {
+		log.Printf(
+			"❌ AI 配置加载失败 character_id=%s error=%v",
+			req.CharacterID,
+			err,
+		)
+
+		writeJSONError(
+			w,
+			http.StatusInternalServerError,
+			"AI configuration not found",
+		)
+
+		return
+	}
+
+	log.Printf(
+		"🤖 AI 配置加载成功 character_id=%s model=%s temperature=%.2f",
+		aiConfig.ID,
+		aiConfig.Model,
+		aiConfig.Temperature,
+	)
+
+	apiKey := os.Getenv(
+		"DASHSCOPE_API_KEY",
+	)
 
 	if apiKey == "" {
 		log.Println(
@@ -81,24 +153,34 @@ func HandleQwenChat(w http.ResponseWriter, r *http.Request) {
 			http.StatusInternalServerError,
 			"AI API Key not configured",
 		)
+
 		return
 	}
 
 	aiReqBody := map[string]interface{}{
-		"model": "qwen-plus",
+		"model": aiConfig.Model,
+
 		"messages": []map[string]string{
 			{
 				"role":    "system",
-				"content": getPersona(req.CharacterID),
+				"content": aiConfig.SystemPrompt,
 			},
 			{
 				"role":    "user",
 				"content": req.Message,
 			},
 		},
+
+		"temperature": aiConfig.Temperature,
 	}
 
-	jsonBytes, err := json.Marshal(aiReqBody)
+	if aiConfig.MaxTokens > 0 {
+		aiReqBody["max_tokens"] = aiConfig.MaxTokens
+	}
+
+	jsonBytes, err := json.Marshal(
+		aiReqBody,
+	)
 
 	if err != nil {
 		log.Printf(
@@ -111,11 +193,12 @@ func HandleQwenChat(w http.ResponseWriter, r *http.Request) {
 			http.StatusInternalServerError,
 			"failed to build AI request",
 		)
+
 		return
 	}
 
 	log.Printf(
-		"🤖 AI 请求 character_id=%s message=%q",
+		"🤖 Qwen 请求 character_id=%s message=%q",
 		req.CharacterID,
 		req.Message,
 	)
@@ -137,6 +220,7 @@ func HandleQwenChat(w http.ResponseWriter, r *http.Request) {
 			http.StatusInternalServerError,
 			"failed to create AI request",
 		)
+
 		return
 	}
 
@@ -167,12 +251,15 @@ func HandleQwenChat(w http.ResponseWriter, r *http.Request) {
 			http.StatusBadGateway,
 			"AI service connection failed",
 		)
+
 		return
 	}
 
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(
+		resp.Body,
+	)
 
 	if err != nil {
 		log.Printf(
@@ -185,6 +272,7 @@ func HandleQwenChat(w http.ResponseWriter, r *http.Request) {
 			http.StatusBadGateway,
 			"failed to read AI response",
 		)
+
 		return
 	}
 
@@ -198,7 +286,9 @@ func HandleQwenChat(w http.ResponseWriter, r *http.Request) {
 		string(respBody),
 	)
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp.StatusCode < 200 ||
+		resp.StatusCode >= 300 {
+
 		log.Printf(
 			"❌ Qwen API 返回错误: status=%d body=%s",
 			resp.StatusCode,
@@ -213,10 +303,11 @@ func HandleQwenChat(w http.ResponseWriter, r *http.Request) {
 				resp.StatusCode,
 			),
 		)
+
 		return
 	}
 
-	var qwenResp map[string]interface{}
+	var qwenResp QwenResponse
 
 	if err := json.Unmarshal(
 		respBody,
@@ -232,10 +323,13 @@ func HandleQwenChat(w http.ResponseWriter, r *http.Request) {
 			http.StatusBadGateway,
 			"invalid AI response",
 		)
+
 		return
 	}
 
-	replyText := extractContent(qwenResp)
+	replyText := extractQwenContent(
+		&qwenResp,
+	)
 
 	if replyText == "" {
 		log.Printf(
@@ -247,6 +341,25 @@ func HandleQwenChat(w http.ResponseWriter, r *http.Request) {
 			http.StatusBadGateway,
 			"AI returned empty response",
 		)
+
+		return
+	}
+
+	replyText = cleanAIReply(
+		replyText,
+	)
+
+	if replyText == "" {
+		log.Printf(
+			"❌ 清理后的 AI 回复为空",
+		)
+
+		writeJSONError(
+			w,
+			http.StatusBadGateway,
+			"AI returned empty response",
+		)
+
 		return
 	}
 
@@ -255,51 +368,87 @@ func HandleQwenChat(w http.ResponseWriter, r *http.Request) {
 		replyText,
 	)
 
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(
+		http.StatusOK,
+	)
 
-	json.NewEncoder(w).Encode(
+	if err := json.NewEncoder(w).Encode(
 		ChatResponse{
 			Reply: replyText,
 		},
-	)
-}
-
-func getPersona(id string) string {
-	switch id {
-	case "guide":
-		return "你是一个赛博朋克地图应用中的智能导游角色，说话简洁、富有科技感。回答控制在3到4行左右，每行大约12到16个字。不要输出动作描写，不要使用星号，不要输出选项列表，不要输出额外提示。"
-
-	default:
-		return "你是一个游戏 NPC。回答简洁，不要输出动作描写和选项列表。"
+	); err != nil {
+		log.Printf(
+			"❌ 返回 Godot JSON 失败: %v",
+			err,
+		)
 	}
 }
 
-func extractContent(resp map[string]interface{}) string {
-	choices, ok := resp["choices"].([]interface{})
-
-	if !ok || len(choices) == 0 {
+func extractQwenContent(
+	resp *QwenResponse,
+) string {
+	if resp == nil {
 		return ""
 	}
 
-	choice, ok := choices[0].(map[string]interface{})
-
-	if !ok {
+	if len(resp.Choices) == 0 {
 		return ""
 	}
 
-	message, ok := choice["message"].(map[string]interface{})
+	content := resp.Choices[0].Message.Content
 
-	if !ok {
-		return ""
+	return trimString(content)
+}
+
+func cleanAIReply(
+	text string,
+) string {
+	text = trimString(text)
+
+	if len(text) >= 7 &&
+		text[:7] == "```json" {
+		text = text[7:]
 	}
 
-	content, ok := message["content"].(string)
-
-	if !ok {
-		return ""
+	if len(text) >= 3 &&
+		text[:3] == "```" {
+		text = text[3:]
 	}
 
-	return content
+	if len(text) >= 3 &&
+		text[len(text)-3:] == "```" {
+		text = text[:len(text)-3]
+	}
+
+	return trimString(text)
+}
+
+func trimString(
+	text string,
+) string {
+	for len(text) > 0 {
+		switch text[0] {
+		case ' ', '\t', '\n', '\r':
+			text = text[1:]
+		default:
+			goto right
+		}
+	}
+
+right:
+
+	for len(text) > 0 {
+		last := text[len(text)-1]
+
+		switch last {
+		case ' ', '\t', '\n', '\r':
+			text = text[:len(text)-1]
+		default:
+			return text
+		}
+	}
+
+	return text
 }
 
 func writeJSONError(
@@ -307,9 +456,14 @@ func writeJSONError(
 	status int,
 	message string,
 ) {
+	w.Header().Set(
+		"Content-Type",
+		"application/json; charset=utf-8",
+	)
+
 	w.WriteHeader(status)
 
-	json.NewEncoder(w).Encode(
+	_ = json.NewEncoder(w).Encode(
 		map[string]string{
 			"error": message,
 		},
